@@ -27,12 +27,24 @@ resources:
               - pyyaml
 
 
+      schedule:
+        quartz_cron_expression: "0 0 6 1 * ?"
+        timezone_id: "America/New_York"
+        pause_status: PAUSED
+
+      email_notifications:
+        on_failure:
+          - tnemo65.ldt@gmail.com
+      notification_settings:
+        no_alert_for_skipped_runs: true
+
       tasks:
         - task_key: ingest_bronze
           environment_key: default
           spark_python_task:
             python_file: ../src/ingestion/bronze_autoloader.py
           max_retries: 2
+          timeout_seconds: 1800
 
         - task_key: transform_silver
           depends_on:
@@ -41,6 +53,7 @@ resources:
           spark_python_task:
             python_file: ../src/transform/silver_clean.py
           max_retries: 2
+          timeout_seconds: 1800
 
         - task_key: dq_gate
           depends_on:
@@ -49,6 +62,7 @@ resources:
           spark_python_task:
             python_file: ../src/transform/run_dq_gate.py
           max_retries: 0
+          timeout_seconds: 1800
 
         - task_key: aggregate_gold
           depends_on:
@@ -57,6 +71,7 @@ resources:
           spark_python_task:
             python_file: ../src/transform/run_gold_sql.py
           max_retries: 2
+          timeout_seconds: 1800
 
         - task_key: export_bigquery
           depends_on:
@@ -65,6 +80,7 @@ resources:
           spark_python_task:
             python_file: ../src/export/export_bigquery.py
           max_retries: 2
+          timeout_seconds: 1800
 
 targets:
   dev:
