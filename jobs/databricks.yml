@@ -2,6 +2,12 @@
 bundle:
   name: nyc-taxi-lakehouse
 
+sync:
+  paths:
+    - ../src
+    - ../sql
+    - ../configs
+
 variables:
   catalog:
     default: taxi_lakehouse
@@ -11,24 +17,19 @@ resources:
     taxi_pipeline:
       name: taxi-pipeline
 
-      job_clusters:
-        - job_cluster_key: etl_cluster
-          new_cluster:
-            spark_version: "15.4.x-scala2.12"
-            node_type_id: "n2-standard-4"
-            num_workers: 2
-            data_security_mode: SINGLE_USER
-        - job_cluster_key: gold_cluster
-          new_cluster:
-            spark_version: "15.4.x-scala2.12"
-            node_type_id: "n2-standard-4"
-            num_workers: 2
-            data_security_mode: SINGLE_USER
-            runtime_engine: PHOTON
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - google-cloud-bigquery
+              - google-cloud-storage
+              - pyyaml
+
 
       tasks:
         - task_key: ingest_bronze
-          job_cluster_key: etl_cluster
+          environment_key: default
           spark_python_task:
             python_file: ../src/ingestion/bronze_autoloader.py
           max_retries: 2
@@ -36,7 +37,7 @@ resources:
         - task_key: transform_silver
           depends_on:
             - task_key: ingest_bronze
-          job_cluster_key: etl_cluster
+          environment_key: default
           spark_python_task:
             python_file: ../src/transform/silver_clean.py
           max_retries: 2
@@ -44,7 +45,7 @@ resources:
         - task_key: dq_gate
           depends_on:
             - task_key: transform_silver
-          job_cluster_key: etl_cluster
+          environment_key: default
           spark_python_task:
             python_file: ../src/transform/run_dq_gate.py
           max_retries: 0
@@ -52,7 +53,7 @@ resources:
         - task_key: aggregate_gold
           depends_on:
             - task_key: dq_gate
-          job_cluster_key: gold_cluster
+          environment_key: default
           spark_python_task:
             python_file: ../src/transform/run_gold_sql.py
           max_retries: 2
@@ -60,12 +61,9 @@ resources:
         - task_key: export_bigquery
           depends_on:
             - task_key: aggregate_gold
-          job_cluster_key: etl_cluster
+          environment_key: default
           spark_python_task:
             python_file: ../src/export/export_bigquery.py
-          libraries:
-            - maven:
-                coordinates: "com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.41.0"
           max_retries: 2
 
 targets:

@@ -17,9 +17,9 @@ BRONZE_SCHEMA = StructType(
         StructField("VendorID", IntegerType(), True),
         StructField("tpep_pickup_datetime", TimestampType(), True),
         StructField("tpep_dropoff_datetime", TimestampType(), True),
-        StructField("passenger_count", DoubleType(), True),
+        StructField("passenger_count", LongType(), True),
         StructField("trip_distance", DoubleType(), True),
-        StructField("RatecodeID", DoubleType(), True),
+        StructField("RatecodeID", LongType(), True),
         StructField("store_and_fwd_flag", StringType(), True),
         StructField("PULocationID", IntegerType(), True),
         StructField("DOLocationID", IntegerType(), True),
@@ -32,7 +32,7 @@ BRONZE_SCHEMA = StructType(
         StructField("improvement_surcharge", DoubleType(), True),
         StructField("total_amount", DoubleType(), True),
         StructField("congestion_surcharge", DoubleType(), True),
-        StructField("airport_fee", DoubleType(), True),
+        StructField("Airport_fee", DoubleType(), True),
         StructField("cbd_congestion_fee", DoubleType(), True),
     ]
 )

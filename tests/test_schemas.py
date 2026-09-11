@@ -9,13 +9,14 @@ def test_bronze_schema_is_struct_type():
 
 def test_bronze_schema_has_all_columns_from_design_doc():
     expected = {
-        "VendorID", "tpep_pickup_datetime", "tpep_dropoff_datetime",
-        "passenger_count", "trip_distance", "RatecodeID", "store_and_fwd_flag",
-        "PULocationID", "DOLocationID", "payment_type", "fare_amount", "extra",
+        "vendorid", "tpep_pickup_datetime", "tpep_dropoff_datetime",
+        "passenger_count", "trip_distance", "ratecodeid", "store_and_fwd_flag",
+        "pulocationid", "dolocationid", "payment_type", "fare_amount", "extra",
         "mta_tax", "tip_amount", "tolls_amount", "improvement_surcharge",
         "total_amount", "congestion_surcharge", "airport_fee", "cbd_congestion_fee",
     }
-    assert expected.issubset(set(BRONZE_SCHEMA.fieldNames()))
+    actual = {c.lower() for c in BRONZE_SCHEMA.fieldNames()}
+    assert expected.issubset(actual)
 
 
 def test_money_columns_are_double_in_bronze():

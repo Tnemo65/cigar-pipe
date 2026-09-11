@@ -7,7 +7,14 @@ CATALOG = "taxi_lakehouse"
 
 
 def load_config(path: str = "configs/config.yaml") -> dict[str, Any]:
-    with open(path) as f:
+    p = Path(path)
+    if not p.is_absolute() and not p.exists():
+        _f = globals().get("__file__") or globals().get("filename")
+        if _f:
+            candidate = Path(_f).resolve().parents[2] / path
+            if candidate.exists():
+                p = candidate
+    with open(p) as f:
         return yaml.safe_load(f)
 
 
