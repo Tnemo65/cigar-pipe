@@ -1,90 +1,42 @@
-"""Skew benchmark: baseline GROUP BY vs salted GROUP BY on Silver trips.
-
-run_baseline(spark, month)  — plain GROUP BY pu_location_id
-run_salted(spark, month)    — adds a salt column to spread hot keys across SALT_BUCKETS partitions
-
-Run as a Databricks notebook or spark-submit job, not in pytest (needs real data).
-Results are printed; paste into benchmarks/results.md.
-"""
-from __future__ import annotations
-
+# src/transform/skew_benchmark.py
+import sys
 import time
+from pathlib import Path
 
-from pyspark.sql import DataFrame, SparkSession
-import pyspark.sql.functions as F
+from pyspark.sql import SparkSession, functions as F
 
-from src.common.paths import catalog_table
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.common import paths
 
 SALT_BUCKETS = 8
-_SILVER = catalog_table("silver", "yellow_trips")
 
 
-def _load_month(spark: SparkSession, month: str) -> DataFrame:
-    return (
-        spark.table(_SILVER)
-        .filter(F.date_format("tpep_pickup_datetime", "yyyy-MM") == month)
+def run_baseline(spark: SparkSession) -> float:
+    df = spark.table(paths.catalog_table("silver", "trips_clean"))
+    start = time.time()
+    df.groupBy("pickup_location_id", F.hour("pickup_at")).count().collect()
+    return time.time() - start
+
+
+def run_salted(spark: SparkSession) -> float:
+    """design.md §9.1 -- salt the hot key, pre-aggregate on the salted key,
+    then combine. This is the only real fix for aggregation skew (AQE's
+    skew-join rule does not apply to a GROUP BY -- see design.md §9.1)."""
+    df = spark.table(paths.catalog_table("silver", "trips_clean")).withColumn(
+        "_salt", (F.rand() * SALT_BUCKETS).cast("int")
     )
-
-
-def run_baseline(spark: SparkSession, month: str) -> dict:
-    """Plain GROUP BY — exposes skew on hot pickup zones."""
-    df = _load_month(spark, month)
-    t0 = time.perf_counter()
-    result = (
-        df.groupBy("pu_location_id")
-        .agg(
-            F.count("*").alias("trip_count"),
-            F.sum("fare_amount").alias("total_fare"),
-        )
-    )
-    row_count = result.count()
-    elapsed = time.perf_counter() - t0
-    return {"strategy": "baseline", "month": month, "rows": row_count, "seconds": round(elapsed, 2)}
-
-
-def run_salted(spark: SparkSession, month: str) -> dict:
-    """Salted GROUP BY — distributes hot keys across SALT_BUCKETS partitions then re-aggregates."""
-    df = _load_month(spark, month)
-    t0 = time.perf_counter()
-
-    # Phase 1: partial aggregation with salt
-    salted = df.withColumn("salt", (F.rand() * SALT_BUCKETS).cast("int"))
-    partial = (
-        salted.groupBy("pu_location_id", "salt")
-        .agg(
-            F.count("*").alias("trip_count"),
-            F.sum("fare_amount").alias("total_fare"),
-        )
-    )
-
-    # Phase 2: final aggregation without salt
-    result = (
-        partial.groupBy("pu_location_id")
-        .agg(
-            F.sum("trip_count").alias("trip_count"),
-            F.sum("total_fare").alias("total_fare"),
-        )
-    )
-    row_count = result.count()
-    elapsed = time.perf_counter() - t0
-    return {"strategy": f"salted_{SALT_BUCKETS}", "month": month, "rows": row_count, "seconds": round(elapsed, 2)}
+    start = time.time()
+    partial = df.groupBy("pickup_location_id", F.hour("pickup_at").alias("pickup_hour"), "_salt").count()
+    partial.groupBy("pickup_location_id", "pickup_hour").agg(F.sum("count").alias("count")).collect()
+    return time.time() - start
 
 
 if __name__ == "__main__":
-    import argparse
-
-    p = argparse.ArgumentParser()
-    p.add_argument("--month", default="2024-01")
-    args = p.parse_args()
-
-    spark = SparkSession.builder.appName("skew-benchmark").getOrCreate()
-
-    baseline = run_baseline(spark, args.month)
-    salted = run_salted(spark, args.month)
-
-    print("\n=== Skew Benchmark Results ===")
-    for r in (baseline, salted):
-        print(f"  {r['strategy']:20s}  rows={r['rows']:>8,}  time={r['seconds']:>6.2f}s")
-    speedup = baseline["seconds"] / salted["seconds"] if salted["seconds"] > 0 else float("inf")
-    print(f"\n  Speedup (salted vs baseline): {speedup:.2f}x")
-    print("\nPaste these numbers into benchmarks/results.md")
+    spark = SparkSession.builder.getOrCreate()
+    baseline_seconds = run_baseline(spark)
+    salted_seconds = run_salted(spark)
+    print(f"baseline: {baseline_seconds:.2f}s, salted: {salted_seconds:.2f}s")
+    print(
+        "Record these numbers, the Spark UI's max/median task-time ratio for "
+        "both stages, and the data tier used, in benchmarks/results.md."
+    )

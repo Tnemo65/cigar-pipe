@@ -1,21 +1,33 @@
-# Skew Benchmark Results
+# Benchmark Results
 
-## Setup
+## 1. Zone-driven data skew (design.md §9.1)
 
-- Silver table: `taxi_lakehouse.silver.yellow_trips`
-- Grouped by: `pu_location_id`
-- Salt buckets: 8
-- Cluster: _fill in node type and worker count_
+| Tier | Baseline (s) | Salted (s) | Max/median task ratio (baseline) | Max/median task ratio (salted) |
+|---|---|---|---|---|
+| Medium | <fill in> | <fill in> | <fill in from Spark UI> | <fill in from Spark UI> |
+| Large  | <fill in> | <fill in> | <fill in from Spark UI> | <fill in from Spark UI> |
 
-## Results
+## 2. Join-strategy proof: broadcast vs sort-merge (design.md §9.2)
 
-| Month | Strategy | Rows | Time (s) | Speedup |
-|-------|----------|------|----------|---------|
-| YYYY-MM | baseline | — | — | 1.00x |
-| YYYY-MM | salted_8 | — | — | —x |
+Procedure: run `sql/gold/revenue_by_zone_hour.sql`'s query once with
+`spark.sql.autoBroadcastJoinThreshold` at its default, once with it set to
+`-1` (forces sort-merge). Record shuffle read/write bytes and stage
+duration from the Spark UI's SQL tab for both runs.
 
-## Notes
+| Tier | Broadcast: stage duration | Broadcast: shuffle bytes | Sort-merge: stage duration | Sort-merge: shuffle bytes |
+|---|---|---|---|---|
+| Medium | <fill in> | <fill in> | <fill in> | <fill in> |
+| Large  | <fill in> | <fill in> | <fill in> | <fill in> |
 
-- Run `python -m src.transform.skew_benchmark --month YYYY-MM` on the ETL cluster.
-- Replace the placeholder rows above with actual output from the script.
-- Speedup varies by data volume and cluster size; re-run after any cluster resize.
+## 3. Incremental vs full-recompute Gold refresh (design.md §9.3)
+
+Procedure: at the large tier, time `run_gold_sql.py` for one new month (a)
+scoped normally (the static-partition `INSERT OVERWRITE ... PARTITION`
+already implemented) vs (b) a temporary full-history variant with the
+`PARTITION (pickup_month = :month)` clause and `WHERE t.pickup_month =
+:month` filter both removed, aggregating all of Silver history instead.
+
+| Metric | Incremental (1 new month) | Full recompute |
+|---|---|---|
+| Wall-clock | <fill in> | <fill in> |
+| Bytes scanned | <fill in> | <fill in> |
