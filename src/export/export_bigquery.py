@@ -35,6 +35,14 @@ def _default_writer(df: DataFrame, options: dict) -> None:
         df.write.format("parquet").mode("overwrite").save(export_path)
         print(f"Successfully exported {table_name} partition {part} to {export_path}.")
         try:
+            from pyspark.dbutils import DBUtils
+            dbutils = DBUtils(df.sparkSession)
+            for f in dbutils.fs.ls(export_path):
+                if f.name.startswith("_"):
+                    dbutils.fs.rm(f.path)
+        except Exception:
+            pass
+        try:
             from google.cloud import bigquery
             project_id = cfg["gcp"]["project_id"]
             client = bigquery.Client(project=project_id)
