@@ -1,43 +1,25 @@
-"""Pipeline run logging — appended in each task's __main__ try/finally block.
-
-log_run never raises; logging failure must never mask task failure.
-"""
-from __future__ import annotations
-
-import traceback
-from datetime import datetime, timezone
+# src/common/run_log.py
+from datetime import datetime
 
 from pyspark.sql import SparkSession
 
-from src.common.paths import catalog_table
-
-_LOG_TABLE = catalog_table("reference", "pipeline_run_log")
+from src.common import paths
 
 
 def log_run(
-    *,
+    spark: SparkSession,
     task_name: str,
-    month: str,
-    status: str,           # "SUCCESS" | "FAILURE"
-    rows_processed: int = 0,
-    quarantine_rate: float | None = None,
-    error_message: str | None = None,
+    rows_in: int,
+    rows_out: int,
+    rows_quarantined: int,
+    status: str,
+    started_at: datetime,
+    ended_at: datetime,
+    table_name: str = None,
 ) -> None:
-    """Append one row to pipeline_run_log. Swallows all exceptions silently."""
-    try:
-        spark = SparkSession.getActiveSession()
-        if spark is None:
-            return
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        row = [(task_name, month, status, rows_processed, quarantine_rate, error_message, now)]
-        df = spark.createDataFrame(
-            row,
-            schema=(
-                "task_name STRING, month STRING, status STRING, "
-                "rows_processed LONG, quarantine_rate DOUBLE, "
-                "error_message STRING, logged_at TIMESTAMP"
-            ),
-        )
-        df.write.format("delta").mode("append").saveAsTable(_LOG_TABLE)
-    except Exception:
-        pass  # intentional: log failure must not surface to caller
+    table_name = table_name or paths.catalog_table("reference", "pipeline_run_log")
+    row = spark.createDataFrame(
+        [(task_name, rows_in, rows_out, rows_quarantined, status, started_at, ended_at)],
+        ["task_name", "rows_in", "rows_out", "rows_quarantined", "status", "started_at", "ended_at"],
+    )
+    row.write.format("delta").mode("append").saveAsTable(table_name)

@@ -1,15 +1,12 @@
--- Recent pipeline run summary: last 30 days, one row per task+month+status.
--- Use in Databricks SQL or a BI tool to monitor pipeline health.
-
+-- monitoring/run_metrics_query.sql
+-- Ad-hoc health check: last 20 runs per task, with duration and quarantine rate.
 SELECT
-    task_name,
-    month,
-    status,
-    rows_processed,
-    ROUND(quarantine_rate * 100, 2)  AS quarantine_rate_pct,
-    error_message,
-    logged_at
+  task_name,
+  status,
+  rows_in, rows_out, rows_quarantined,
+  round(rows_quarantined / NULLIF(rows_in, 0) * 100, 2) AS quarantine_pct,
+  started_at, ended_at,
+  (unix_timestamp(ended_at) - unix_timestamp(started_at)) AS duration_seconds
 FROM taxi_lakehouse.reference.pipeline_run_log
-WHERE logged_at >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
-ORDER BY logged_at DESC
-LIMIT 200;
+ORDER BY started_at DESC
+LIMIT 20;
