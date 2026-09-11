@@ -1,136 +1,102 @@
-"""Tests: Silver MERGE deduplication via write_batch.
+# tests/test_dedup.py
+from datetime import datetime
 
-Two core cases:
-  1. Re-running the exact same batch produces no duplicate rows.
-  2. A new row (different trip_id) is inserted on the second run.
-"""
-from __future__ import annotations
+from delta.tables import DeltaTable
 
-import pytest
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import (
-    DecimalType,
-    DoubleType,
-    IntegerType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
+from src.transform.silver_clean import process_batch, write_batch
+
+DIM_ZONE_ROWS = [(4, "Manhattan", "Alphabet City", "Yellow Zone", False)]
+DIM_ZONE_COLUMNS = ["location_id", "borough", "zone", "service_zone", "is_sentinel"]
+DIM_RATE_ROWS = [(1, "Standard", False)]
+DIM_RATE_COLUMNS = ["rate_code_id", "rate_code_name", "is_flat_fare"]
+DIM_PAY_ROWS = [(1, "Credit card", True)]
+DIM_PAY_COLUMNS = ["payment_type_id", "payment_type_name", "tip_is_recorded"]
+
+ROW = dict(
+    VendorID=1,
+    tpep_pickup_datetime=datetime(2024, 1, 15, 8, 0, 0),
+    tpep_dropoff_datetime=datetime(2024, 1, 15, 8, 10, 0),
+    passenger_count=1.0,
+    trip_distance=2.5,
+    RatecodeID=1.0,
+    PULocationID=4,
+    DOLocationID=4,
+    payment_type=1,
+    fare_amount=12.0,
+    extra=0.5,
+    mta_tax=0.5,
+    tip_amount=2.0,
+    tolls_amount=0.0,
+    improvement_surcharge=0.3,
+    total_amount=15.3,
+    congestion_surcharge=2.5,
+    airport_fee=0.0,
+    cbd_congestion_fee=0.0,
+    _source_file="yellow_tripdata_2024-01.parquet",
+    _ingested_at=datetime(2024, 2, 1, 0, 0, 0),
 )
 
-from src.transform.silver_clean import write_batch
 
+def test_rerunning_the_same_batch_does_not_duplicate_rows(spark, tmp_delta_path):
+    dim_zone = spark.createDataFrame(DIM_ZONE_ROWS, DIM_ZONE_COLUMNS)
+    dim_rate = spark.createDataFrame(DIM_RATE_ROWS, DIM_RATE_COLUMNS)
+    dim_pay = spark.createDataFrame(DIM_PAY_ROWS, DIM_PAY_COLUMNS)
+    batch = spark.createDataFrame([ROW])
 
-# ──────────────────────────────────────────────────────────────
-# Stub writer that accumulates rows in a list (no Delta needed)
-# ──────────────────────────────────────────────────────────────
+    silver_valid, quarantine, _ = process_batch(batch, dim_zone, dim_rate, dim_pay)
+    silver_valid.write.format("delta").save(tmp_delta_path)
+    loc = tmp_delta_path.replace("\\", "/")
+    spark.sql(f"CREATE TABLE local_silver_test USING DELTA LOCATION '{loc}'")
 
-class _InMemoryWriter:
-    """Emulates MERGE: insert-if-not-exists on trip_id."""
+    try:
+        target = DeltaTable.forName(spark, "local_silver_test")
+        # First "run": table already has the row from the initial write above.
+        assert spark.table("local_silver_test").count() == 1
 
-    def __init__(self) -> None:
-        self._rows: list[dict] = []
-
-    def merge(self, valid_df: DataFrame, _table: str) -> None:
-        existing_ids = {r["trip_id"] for r in self._rows}
-        new_rows = [r.asDict() for r in valid_df.collect() if r["trip_id"] not in existing_ids]
-        self._rows.extend(new_rows)
-
-    def append_quarantine(self, quar_df: DataFrame, _table: str) -> None:
-        pass  # not under test here
-
-    @property
-    def row_count(self) -> int:
-        return len(self._rows)
-
-
-# ──────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────
-
-_SILVER_SCHEMA = StructType([
-    StructField("trip_id", StringType(), False),
-    StructField("vendor_id", IntegerType(), True),
-    StructField("tpep_pickup_datetime", TimestampType(), True),
-    StructField("tpep_dropoff_datetime", TimestampType(), True),
-    StructField("passenger_count", IntegerType(), True),
-    StructField("trip_distance", DoubleType(), True),
-    StructField("rate_code_id", DoubleType(), True),
-    StructField("store_and_fwd_flag", StringType(), True),
-    StructField("pu_location_id", LongType(), True),
-    StructField("do_location_id", LongType(), True),
-    StructField("payment_type_id", LongType(), True),
-    StructField("fare_amount", DecimalType(10, 2), True),
-    StructField("extra", DecimalType(10, 2), True),
-    StructField("mta_tax", DecimalType(10, 2), True),
-    StructField("tip_amount", DecimalType(10, 2), True),
-    StructField("tolls_amount", DecimalType(10, 2), True),
-    StructField("improvement_surcharge", DecimalType(10, 2), True),
-    StructField("total_amount", DecimalType(10, 2), True),
-    StructField("congestion_surcharge", DecimalType(10, 2), True),
-    StructField("airport_fee", DecimalType(10, 2), True),
-    StructField("cbd_congestion_fee", DecimalType(10, 2), True),
-])
-
-
-def _make_df(spark: SparkSession, trip_ids: list[str]) -> DataFrame:
-    from decimal import Decimal
-    from datetime import datetime
-
-    rows = [
+        # Second "run": the same batch arrives again, e.g. a Workflow retry.
         (
-            tid,
-            1,
-            datetime(2024, 1, 15, 10, 0, 0),
-            datetime(2024, 1, 15, 10, 30, 0),
-            2,
-            3.5,
-            1.0,
-            "N",
-            132,
-            161,
-            1,
-            Decimal("14.50"),
-            Decimal("0.50"),
-            Decimal("0.50"),
-            Decimal("2.00"),
-            Decimal("0.00"),
-            Decimal("1.00"),
-            Decimal("18.50"),
-            Decimal("2.50"),
-            Decimal("0.00"),
-            Decimal("0.00"),
+            target.alias("t")
+            .merge(silver_valid.alias("s"), "t.trip_id = s.trip_id")
+            .whenNotMatchedInsertAll()
+            .execute()
         )
-        for tid in trip_ids
-    ]
-    return spark.createDataFrame(rows, schema=_SILVER_SCHEMA)
+
+        assert spark.table("local_silver_test").count() == 1, (
+            "reprocessing the identical batch must not duplicate the row"
+        )
+    finally:
+        spark.sql("DROP TABLE IF EXISTS local_silver_test")
 
 
-# ──────────────────────────────────────────────────────────────
-# Tests
-# ──────────────────────────────────────────────────────────────
+def test_a_genuinely_new_row_in_a_later_run_is_still_inserted(spark, tmp_delta_path):
+    dim_zone = spark.createDataFrame(DIM_ZONE_ROWS, DIM_ZONE_COLUMNS)
+    dim_rate = spark.createDataFrame(DIM_RATE_ROWS, DIM_RATE_COLUMNS)
+    dim_pay = spark.createDataFrame(DIM_PAY_ROWS, DIM_PAY_COLUMNS)
+    batch1 = spark.createDataFrame([ROW])
+    silver_valid_1, _, _ = process_batch(batch1, dim_zone, dim_rate, dim_pay)
+    silver_valid_1.write.format("delta").save(tmp_delta_path)
+    loc2 = tmp_delta_path.replace("\\", "/")
+    spark.sql(f"CREATE TABLE local_silver_test_2 USING DELTA LOCATION '{loc2}'")
 
-def test_no_duplicate_on_rerun(spark: SparkSession) -> None:
-    """Writing the same trip_id twice must not produce duplicate rows."""
-    writer = _InMemoryWriter()
-    valid_df = _make_df(spark, ["abc123"])
-    blank = _make_df(spark, []).filter("trip_id = 'none'")  # empty quarantine
+    try:
+        row2 = {
+            **ROW,
+            "tpep_pickup_datetime": datetime(2024, 1, 15, 9, 0, 0),
+            "tpep_dropoff_datetime": datetime(2024, 1, 15, 9, 10, 0),
+        }
+        batch2 = spark.createDataFrame([row2])
+        silver_valid_2, _, _ = process_batch(batch2, dim_zone, dim_rate, dim_pay)
 
-    write_batch(valid_df, blank, writer=writer)
-    assert writer.row_count == 1
+        target = DeltaTable.forName(spark, "local_silver_test_2")
+        (
+            target.alias("t")
+            .merge(silver_valid_2.alias("s"), "t.trip_id = s.trip_id")
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
 
-    write_batch(valid_df, blank, writer=writer)  # same batch again
-    assert writer.row_count == 1, "Duplicate row inserted on rerun"
-
-
-def test_new_row_inserted(spark: SparkSession) -> None:
-    """A batch with a new trip_id must be inserted alongside the existing one."""
-    writer = _InMemoryWriter()
-    blank = _make_df(spark, []).filter("trip_id = 'none'")
-
-    write_batch(_make_df(spark, ["trip-1"]), blank, writer=writer)
-    assert writer.row_count == 1
-
-    write_batch(_make_df(spark, ["trip-2"]), blank, writer=writer)
-    assert writer.row_count == 2, "New unique trip not inserted"
+        assert spark.table("local_silver_test_2").count() == 2, (
+            "a genuinely different trip arriving in a later run must still be inserted"
+        )
+    finally:
+        spark.sql("DROP TABLE IF EXISTS local_silver_test_2")

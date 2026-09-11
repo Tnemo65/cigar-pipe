@@ -1,35 +1,27 @@
-"""Silver cleaning: rename columns, cast money, dedup via MERGE.
+"""Silver cleaning: compute trip_id, apply validity rules, cast money, MERGE.
 
-process_batch  — pure transform; returns (valid_df, quarantine_df, touched_months)
-write_batch    — does the DeltaTable MERGE + quarantine append (injectable for tests)
+process_batch  — pure transform; returns (silver_valid, quarantine, touched_months)
+write_batch    — DeltaTable MERGE into trips_clean + append to trips_quarantine
 """
 from __future__ import annotations
 
-from datetime import date
+import sys
+from pathlib import Path
 from typing import Protocol
 
-from pyspark.sql import DataFrame, SparkSession
-import pyspark.sql.functions as F
-from pyspark.sql.types import DecimalType, IntegerType
+from pyspark.sql import DataFrame, SparkSession, functions as F
 
-from src.common.paths import catalog_table
-from src.common.schemas import (
-    BUSINESS_KEY_COLUMNS,
-    MONEY_COLUMNS_SILVER,
-    SILVER_RENAME,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from delta.tables import DeltaTable
+
+from src.common import paths
+from src.common.schemas import MONEY_COLUMNS_SILVER, SILVER_RENAME
 from src.transform.validity_rules import (
     flag_implausible_trips,
     flag_unresolved_references,
     with_trip_id,
 )
 
-_SILVER_TABLE = lambda: catalog_table("silver", "yellow_trips")      # noqa: E731
-_QUAR_TABLE   = lambda: catalog_table("silver", "yellow_trips_quarantine")  # noqa: E731
-
-# ──────────────────────────────────────────────────────────────
-# Injectable writer protocol (real impl uses DeltaTable; tests stub it)
-# ──────────────────────────────────────────────────────────────
 
 class SilverWriter(Protocol):
     def merge(self, valid_df: DataFrame, target_table: str) -> None: ...
@@ -37,18 +29,14 @@ class SilverWriter(Protocol):
 
 
 class _DefaultSilverWriter:
-    """Production writer backed by DeltaTable MERGE."""
+    def __init__(self, spark: SparkSession) -> None:
+        self.spark = spark
 
     def merge(self, valid_df: DataFrame, target_table: str) -> None:
-        from delta.tables import DeltaTable  # type: ignore[import]
-        spark = valid_df.sparkSession
-        delta_t = DeltaTable.forName(spark, target_table)
+        target = DeltaTable.forName(self.spark, target_table)
         (
-            delta_t.alias("t")
-            .merge(
-                valid_df.alias("s"),
-                "t.trip_id = s.trip_id",
-            )
+            target.alias("t")
+            .merge(valid_df.alias("s"), "t.trip_id = s.trip_id")
             .whenNotMatchedInsertAll()
             .execute()
         )
@@ -57,75 +45,133 @@ class _DefaultSilverWriter:
         quar_df.write.format("delta").mode("append").saveAsTable(target_table)
 
 
-# ──────────────────────────────────────────────────────────────
-# Pure transform
-# ──────────────────────────────────────────────────────────────
-
-def _resolve_reference_sets(spark: SparkSession) -> tuple[set, set, set]:
-    rate_codes = {r.rate_code_id for r in spark.table(catalog_table("reference", "dim_rate_code")).select("rate_code_id").collect()}
-    payment_types = {r.payment_type_id for r in spark.table(catalog_table("reference", "dim_payment_type")).select("payment_type_id").collect()}
-    location_ids = {r.location_id for r in spark.table(catalog_table("reference", "dim_zone")).select("location_id").collect()}
-    return rate_codes, payment_types, location_ids
-
-
 def process_batch(
-    df: DataFrame,
-    *,
-    valid_rate_codes: set,
-    valid_payment_types: set,
-    valid_location_ids: set,
-) -> tuple[DataFrame, DataFrame, list[str]]:
-    """Rename, cast, flag, dedup-key → (valid_df, quarantine_df, touched_months).
-
-    touched_months: list of 'YYYY-MM' strings for the affected pickup months.
-    """
-    # 1. Rename camelCase → snake_case
-    renamed = df
-    for old, new in SILVER_RENAME.items():
-        renamed = renamed.withColumnRenamed(old, new)
-
-    # 2. Cast money columns to DECIMAL(10,2)
-    for col in MONEY_COLUMNS_SILVER:
-        renamed = renamed.withColumn(col, F.col(col).cast(DecimalType(10, 2)))
-
-    renamed = renamed.withColumn("passenger_count", F.col("passenger_count").cast(IntegerType()))
-
-    # 3. Quality flags
-    flagged = flag_implausible_trips(renamed)
-    flagged = flag_unresolved_references(
-        flagged, valid_rate_codes, valid_payment_types, valid_location_ids
+    bronze_batch: DataFrame,
+    dim_zone: DataFrame,
+    dim_rate_code: DataFrame,
+    dim_payment_type: DataFrame,
+) -> tuple[DataFrame, DataFrame, list]:
+    """design.md §12.4 silver_clean.py: compute trip_id, apply rules 1+2,
+    split valid/invalid, rename+cast the valid side to the Silver schema,
+    return (silver_valid, quarantine, distinct touched pickup_months)."""
+    checked = (
+        bronze_batch.transform(with_trip_id)
+        .transform(flag_implausible_trips)
+        .transform(lambda d: flag_unresolved_references(d, dim_zone, dim_rate_code, dim_payment_type))
     )
 
-    # 4. trip_id
-    with_id = with_trip_id(flagged)
+    valid = checked.filter(F.col("reason_code").isNull())
+    invalid = checked.filter(F.col("reason_code").isNotNull())
 
-    # 5. Split valid / quarantine
-    valid_df = with_id.filter(F.col("reason_code").isNull()).drop("reason_code")
-    quar_df  = with_id.filter(F.col("reason_code").isNotNull())
+    silver_cols = [
+        F.col(bronze_col).alias(silver_col)
+        for bronze_col, silver_col in SILVER_RENAME.items()
+        if bronze_col in bronze_batch.columns
+    ]
+    passthrough = [c for c in ("_source_file", "_ingested_at") if c in bronze_batch.columns]
 
-    # 6. Derive pickup_month partition label from valid rows
-    touched = (
-        valid_df.select(F.date_format("tpep_pickup_datetime", "yyyy-MM").alias("m"))
-        .distinct()
-        .rdd.map(lambda r: r.m)
-        .collect()
+    silver_valid = valid.select("trip_id", *silver_cols, *passthrough)
+    for money_col in MONEY_COLUMNS_SILVER:
+        if money_col in silver_valid.columns:
+            silver_valid = silver_valid.withColumn(money_col, F.col(money_col).cast("decimal(10,2)"))
+    if "pickup_at" in silver_valid.columns:
+        silver_valid = silver_valid.withColumn(
+            "pickup_month", F.trunc(F.col("pickup_at"), "month")
+        )
+
+    cols_to_drop = [c for c in ("_rescued_data",) if c in invalid.columns]
+    quarantine = invalid.drop(*cols_to_drop).withColumn(
+        "quarantined_at", F.current_timestamp()
     )
 
-    return valid_df, quar_df, sorted(touched)
+    touched_months: list = []
+    if "pickup_month" in silver_valid.columns:
+        touched_months = [
+            row.pickup_month
+            for row in silver_valid.select("pickup_month").distinct().collect()
+        ]
 
+    return silver_valid, quarantine, touched_months
 
-# ──────────────────────────────────────────────────────────────
-# I/O layer
-# ──────────────────────────────────────────────────────────────
 
 def write_batch(
-    valid_df: DataFrame,
-    quar_df: DataFrame,
+    spark: SparkSession,
+    silver_valid: DataFrame,
+    quarantine: DataFrame,
     writer: SilverWriter | None = None,
 ) -> None:
-    """MERGE valid rows into Silver; append quarantine rows."""
-    w = writer or _DefaultSilverWriter()
-    if valid_df.rdd.isEmpty() is False:
-        w.merge(valid_df, _SILVER_TABLE())
-    if quar_df.rdd.isEmpty() is False:
-        w.append_quarantine(quar_df, _QUAR_TABLE())
+    """design.md §11 layer 2: cross-run MERGE anti-join on trip_id, not
+    dropDuplicates() scoped to the micro-batch."""
+    w = writer or _DefaultSilverWriter(spark)
+    target_clean = paths.catalog_table("silver", "trips_clean")
+    target_quar = paths.catalog_table("silver", "trips_quarantine")
+    w.merge(silver_valid, target_clean)
+    w.append_quarantine(quarantine, target_quar)
+
+
+if __name__ == "__main__":
+    from datetime import datetime
+    from src.common.run_log import log_run
+
+    started_at = datetime.now()
+    status = "SUCCESS"
+    total_in = 0
+    total_valid = 0
+    total_quar = 0
+
+    cfg = paths.load_config()
+    spark = SparkSession.builder.getOrCreate()
+
+    try:
+        dim_zone_df = spark.table(paths.catalog_table("reference", "dim_zone"))
+        dim_rate_df = spark.table(paths.catalog_table("reference", "dim_rate_code"))
+        dim_pay_df = spark.table(paths.catalog_table("reference", "dim_payment_type"))
+
+        all_months: set = set()
+
+        def _foreach_batch(batch_df: DataFrame, batch_id: int) -> None:
+            global total_in, total_valid, total_quar
+            batch_count = batch_df.count()
+            s_valid, s_quarantine, months = process_batch(
+                batch_df, dim_zone_df, dim_rate_df, dim_pay_df
+            )
+            v_count = s_valid.count()
+            q_count = s_quarantine.count()
+            write_batch(spark, s_valid, s_quarantine)
+            all_months.update(months)
+            total_in += batch_count
+            total_valid += v_count
+            total_quar += q_count
+
+        bronze_stream = spark.readStream.table(paths.catalog_table("bronze", "trips_raw"))
+        query = (
+            bronze_stream.writeStream.foreachBatch(_foreach_batch)
+            .option("checkpointLocation", paths.checkpoint_path("silver", cfg))
+            .trigger(availableNow=True)
+            .start()
+        )
+        query.awaitTermination()
+
+        try:
+            import dbutils  # type: ignore
+
+            dbutils.jobs.taskValues.set(key="touched_months", value=[str(m) for m in all_months])
+        except ImportError:
+            print(f"touched_months={sorted(all_months)} (dbutils unavailable locally)")
+    except Exception:
+        status = "FAILED"
+        raise
+    finally:
+        try:
+            log_run(
+                spark,
+                task_name="transform_silver",
+                rows_in=total_in,
+                rows_out=total_valid,
+                rows_quarantined=total_quar,
+                status=status,
+                started_at=started_at,
+                ended_at=datetime.now(),
+            )
+        except Exception as log_error:
+            print(f"run_log write failed (non-fatal): {log_error}")
