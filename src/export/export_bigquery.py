@@ -14,48 +14,41 @@ from src.common import paths
 Writer = Callable[[DataFrame, dict], None]
 
 
+def _partition_export_path(options: dict, config: dict) -> str:
+    """Return the authoritative BigLake path for one Gold table partition."""
+    table_name = options["table"].split(".")[-1]
+    partition = options.get("datePartition")
+    if not partition:
+        raise ValueError("datePartition is required for a partition-scoped export")
+    return f"gs://{config['gcp']['bucket']}/gold_export/{table_name}/pickup_month={partition}"
+
+
 def _default_writer(df: DataFrame, options: dict) -> None:
-    """design.md §12.2, §12.4 -- direct Storage Write API, no staging bucket.
-    Falls back to partitioned Parquet export in GCS via Unity Catalog storage credential
-    when running on Serverless compute where metadata server is not reachable."""
+    """Write one Gold partition to GCS for a BigLake external table.
+
+    BigLake is the serving contract for this project.  There is deliberately no
+    native BigQuery load fallback here: a table-wide WRITE_TRUNCATE or a
+    driver-side toPandas() conversion could destroy historical partitions and
+    cannot scale with the Gold data volume.
+    """
+    cfg = paths.load_config()
+    export_path = _partition_export_path(options, cfg)
+    table_name = options["table"].split(".")[-1]
+    print(f"Writing {table_name} partition to {export_path}...")
+    df.write.format("parquet").mode("overwrite").save(export_path)
+    print(f"Successfully exported {table_name} partition to {export_path}.")
+
+    # Spark writes marker files alongside data files.  They are not part of the
+    # external table schema, but cleanup failure must remain visible as a warning.
     try:
-        writer = df.write.format("bigquery").option("writeMethod", "direct")
-        for key, value in options.items():
-            if key not in ("table",):
-                writer = writer.option(key, value)
-        writer.option("table", options["table"]).mode("overwrite").save()
-    except Exception as e:
-        print(f"Spark BigQuery direct write unsupported on serverless ({e}).")
-        cfg = paths.load_config()
-        bucket = cfg["gcp"]["bucket"]
-        table_name = options["table"].split(".")[-1]
-        part = options.get("datePartition", "")
-        export_path = f"gs://{bucket}/gold_export/{table_name}/pickup_month={part}"
-        print(f"Writing Gold export as Parquet to {export_path} via Unity Catalog storage credential...")
-        df.write.format("parquet").mode("overwrite").save(export_path)
-        print(f"Successfully exported {table_name} partition {part} to {export_path}.")
-        try:
-            from pyspark.dbutils import DBUtils
-            dbutils = DBUtils(df.sparkSession)
-            for f in dbutils.fs.ls(export_path):
-                if f.name.startswith("_"):
-                    dbutils.fs.rm(f.path)
-        except Exception:
-            pass
-        try:
-            from google.cloud import bigquery
-            project_id = cfg["gcp"]["project_id"]
-            client = bigquery.Client(project=project_id)
-            pdf = df.toPandas()
-            target_dest = f"{project_id}.{options['table']}"
-            job_config = bigquery.LoadJobConfig(
-                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-            )
-            job = client.load_table_from_dataframe(pdf, target_dest, job_config=job_config)
-            job.result()
-            print(f"Loaded {len(pdf)} rows into {target_dest} via BigQuery client.")
-        except Exception as bq_err:
-            print(f"BigQuery direct client sync skipped ({bq_err}). Data safely landed in {export_path}.")
+        from pyspark.dbutils import DBUtils
+
+        dbutils = DBUtils(df.sparkSession)
+        for file_info in dbutils.fs.ls(export_path):
+            if file_info.name.startswith("_"):
+                dbutils.fs.rm(file_info.path)
+    except Exception as cleanup_error:
+        print(f"Warning: could not remove export marker files at {export_path}: {cleanup_error}")
 
 
 def export_month(
@@ -65,15 +58,16 @@ def export_month(
     month: str,
     writer: Writer = _default_writer,
 ) -> None:
-    """design.md §8 rule 4, §11 layer 4 -- partition-scoped WRITE_TRUNCATE
-    equivalent: filter to the touched month, overwrite only that partition
-    decorator, not the whole table."""
+    """Export only the Gold rows belonging to one touched month.
+
+    The writer overwrites the corresponding GCS Hive partition, which is the
+    BigLake serving boundary; it never truncates the complete serving table.
+    """
     df = spark.table(gold_table).filter(F.col("pickup_month") == month)
     month_compact = month.replace("-", "")[:8] if len(month.replace("-", "")) >= 8 else month.replace("-", "") + "01"
     options = {
         "table": f"{bq_dataset}.{gold_table.split('.')[-1]}",
         "datePartition": month_compact,
-        "writeMethod": "direct",
     }
     writer(df, options)
 

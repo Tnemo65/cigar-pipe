@@ -1,7 +1,7 @@
 # tests/test_export_bigquery.py
 from unittest.mock import MagicMock
 
-from src.export.export_bigquery import export_month
+from src.export.export_bigquery import _partition_export_path, export_month
 
 
 def test_export_month_filters_to_the_right_partition_and_calls_writer(spark):
@@ -22,6 +22,30 @@ def test_export_month_filters_to_the_right_partition_and_calls_writer(spark):
     writer.assert_called_once()
     written_df, options = writer.call_args[0]
     assert written_df.count() == 1
-    assert options["writeMethod"] == "direct"
+    assert "writeMethod" not in options
     assert options["table"] == "taxi_analytics.gold_test_table"
     assert options["datePartition"] == "20240101"
+
+
+def test_partition_export_path_is_table_and_month_scoped():
+    path = _partition_export_path(
+        {"table": "taxi_analytics.revenue_by_zone_hour", "datePartition": "20240101"},
+        {"gcp": {"bucket": "taxi-data-engineer-taxi-lake"}},
+    )
+
+    assert path == (
+        "gs://taxi-data-engineer-taxi-lake/"
+        "gold_export/revenue_by_zone_hour/pickup_month=20240101"
+    )
+
+
+def test_partition_export_path_requires_partition():
+    try:
+        _partition_export_path(
+            {"table": "taxi_analytics.revenue_by_zone_hour"},
+            {"gcp": {"bucket": "taxi-data-engineer-taxi-lake"}},
+        )
+    except ValueError as error:
+        assert "datePartition is required" in str(error)
+    else:
+        raise AssertionError("missing datePartition must fail")
