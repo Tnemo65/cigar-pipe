@@ -1,0 +1,37 @@
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+CATALOG = "taxi_lakehouse"
+
+
+def load_config(path: str = "configs/config.yaml") -> dict[str, Any]:
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def catalog_table(schema: str, table: str) -> str:
+    return f"{CATALOG}.{schema}.{table}"
+
+
+def _bucket_uri(config: dict[str, Any], *parts: str) -> str:
+    bucket = config["gcp"]["bucket"]
+    suffix = "/".join(parts)
+    return f"gs://{bucket}/{suffix}/"
+
+
+def raw_yellow_path(config: dict[str, Any]) -> str:
+    return _bucket_uri(config, "raw", "yellow")
+
+
+def raw_ref_path(config: dict[str, Any]) -> str:
+    return _bucket_uri(config, "raw", "ref")
+
+
+def checkpoint_path(name: str, config: dict[str, Any]) -> str:
+    return _bucket_uri(config, "_checkpoints", name)
+
+
+def schema_location_path(name: str, config: dict[str, Any]) -> str:
+    return _bucket_uri(config, "_schemas", name)

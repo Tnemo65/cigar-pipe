@@ -1,0 +1,14 @@
+# configs/config.yaml
+gcp:
+  project_id: "${GCP_PROJECT_ID}"    # set via envsubst or a real value before use
+  region: "us-central1"
+  bucket: "${GCP_PROJECT_ID}-taxi-lake"
+
+databricks:
+  catalog: "taxi_lakehouse"
+
+bigquery:
+  dataset: "taxi_analytics"
+
+thresholds:
+  quarantine_rate_max: 0.02   # design.md §11 fail-fast gate
