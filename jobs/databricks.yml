@@ -16,6 +16,7 @@ resources:
   jobs:
     taxi_pipeline:
       name: taxi-pipeline
+      max_concurrent_runs: 1
 
       environments:
         - environment_key: default

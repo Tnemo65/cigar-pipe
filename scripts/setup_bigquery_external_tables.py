@@ -45,11 +45,8 @@ DDLS = [
 
 
 def setup_external_tables():
+    """Provision external tables without a destructive DROP step."""
     client = bigquery.Client(project=PROJECT_ID)
-    tables = ["revenue_by_zone_hour", "fare_integrity_daily", "payment_mix_monthly"]
-    for t in tables:
-        print(f"Dropping existing table {PROJECT_ID}.{DATASET_ID}.{t} if present...")
-        client.query(f"DROP TABLE IF EXISTS `{PROJECT_ID}.{DATASET_ID}.{t}`").result()
 
     for ddl in DDLS:
         table_name = ddl.split("EXTERNAL TABLE")[1].split("WITH")[0].strip()

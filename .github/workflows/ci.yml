@@ -33,8 +33,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src scripts tests
+
       - name: Run Pytest suite
         run: uv run pytest tests/ -v
+
+      - name: Check working tree whitespace
+        run: git diff --check
 
   validate-bundle:
     name: Databricks Asset Bundle Validation
