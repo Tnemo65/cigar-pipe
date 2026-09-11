@@ -1,9 +1,14 @@
 """Delta Lake Table Optimization and Maintenance Script.
 Applies auto-compaction table properties and runs OPTIMIZE with Z-ORDER.
 """
-import json
-import subprocess
-import time
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.databricks_sql import execute_statement
 
 WAREHOUSE_ID = "d97366f8e702f01e"
 
@@ -31,35 +36,13 @@ STATEMENTS = [
 
 def run_sql(stmt: str):
     print(f"Running: {stmt[:80]}...")
-    payload = json.dumps({
-        "warehouse_id": WAREHOUSE_ID,
-        "statement": stmt,
-        "wait_timeout": "50s",
-    })
-
-    with open("temp_opt_payload.json", "w") as f:
-        f.write(payload)
-
-    proc = subprocess.run(
-        ["databricks", "api", "post", "/api/2.0/sql/statements", "--json", "@temp_opt_payload.json"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    res = json.loads(proc.stdout)
-    state = res.get("status", {}).get("state")
-    if state not in ("SUCCEEDED", "CLOSED"):
-        raise RuntimeError(f"SQL statement failed ({state}): {res}")
+    execute_statement(stmt, WAREHOUSE_ID)
     print(" -> SUCCESS")
 
 
 def main():
     for stmt in STATEMENTS:
         run_sql(stmt)
-    # Clean up temp file
-    import os
-    if os.path.exists("temp_opt_payload.json"):
-        os.remove("temp_opt_payload.json")
     print("All Delta tables successfully optimized and configured!")
 
 

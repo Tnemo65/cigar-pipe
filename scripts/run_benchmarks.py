@@ -1,34 +1,42 @@
 """Run performance benchmarks against Databricks Lakehouse tables.
-Collects real execution times for skew salting, join strategy, and refresh mechanisms.
+Collects client elapsed times after statements reach a terminal state.
 """
 import json
-import subprocess
+import sys
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.databricks_sql import execute_statement
 
 WAREHOUSE_ID = "d97366f8e702f01e"
 
-def execute_timed_sql(stmt: str) -> float:
-    payload = json.dumps({
-        "warehouse_id": WAREHOUSE_ID,
-        "statement": stmt,
-        "wait_timeout": "50s",
-    })
-    with open("temp_bench_payload.json", "w") as f:
-        f.write(payload)
 
-    start = time.time()
-    proc = subprocess.run(
-        ["databricks", "api", "post", "/api/2.0/sql/statements", "--json", "@temp_bench_payload.json"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    elapsed = time.time() - start
-    res = json.loads(proc.stdout)
-    state = res.get("status", {}).get("state")
-    if state not in ("SUCCEEDED", "CLOSED"):
-        raise RuntimeError(f"Statement failed ({state}): {res}")
-    return elapsed
+def execute_timed_sql(stmt: str) -> dict:
+    """Return completion-aware client timing and statement metadata."""
+    start = time.monotonic()
+    response = execute_statement(stmt, WAREHOUSE_ID)
+    return {
+        "client_elapsed_seconds": time.monotonic() - start,
+        "statement_id": response.get("statement_id"),
+    }
+
+
+def measure_query(stmt: str, repetitions: int = 3) -> dict:
+    """Warm up once, then collect repeated client timings for one statement."""
+    execute_timed_sql(stmt)
+    measurements = [execute_timed_sql(stmt) for _ in range(repetitions)]
+    elapsed = sorted(item["client_elapsed_seconds"] for item in measurements)
+    median = elapsed[len(elapsed) // 2]
+    return {
+        "runs": measurements,
+        "min_client_elapsed_seconds": min(elapsed),
+        "median_client_elapsed_seconds": median,
+        "max_client_elapsed_seconds": max(elapsed),
+    }
 
 
 def main():
@@ -48,10 +56,10 @@ def main():
     FROM salted
     GROUP BY pickup_location_id, pickup_hour
     """
-    t_base = execute_timed_sql(baseline_query)
-    print(f"Baseline GroupBy: {t_base:.2f}s")
-    t_salt = execute_timed_sql(salted_query)
-    print(f"Salted GroupBy:   {t_salt:.2f}s")
+    t_base = measure_query(baseline_query)
+    print(f"Baseline GroupBy median: {t_base['median_client_elapsed_seconds']:.2f}s")
+    t_salt = measure_query(salted_query)
+    print(f"Salted GroupBy median:   {t_salt['median_client_elapsed_seconds']:.2f}s")
 
     print("\n=== 2. JOIN STRATEGY BENCHMARK ===")
     broadcast_join_query = """
@@ -82,10 +90,10 @@ def main():
     WHERE t.pickup_month = '2024-01-01'
     GROUP BY date_trunc('hour', t.pickup_at), t.pickup_location_id, z.zone, z.borough
     """
-    t_broadcast = execute_timed_sql(broadcast_join_query)
-    print(f"Broadcast Join:  {t_broadcast:.2f}s")
-    t_merge = execute_timed_sql(sort_merge_join_query)
-    print(f"Sort-Merge Join: {t_merge:.2f}s")
+    t_broadcast = measure_query(broadcast_join_query)
+    print(f"Broadcast Join median:  {t_broadcast['median_client_elapsed_seconds']:.2f}s")
+    t_merge = measure_query(sort_merge_join_query)
+    print(f"Sort-Merge Join median: {t_merge['median_client_elapsed_seconds']:.2f}s")
 
     print("\n=== 3. INCREMENTAL VS FULL RECOMPUTE ===")
     incremental_query = """
@@ -105,20 +113,27 @@ def main():
     FROM taxi_lakehouse.silver.trips_clean t
     GROUP BY date_trunc('hour', t.pickup_at), t.pickup_location_id
     """
-    t_inc = execute_timed_sql(incremental_query)
-    print(f"Incremental Query (partition-scoped): {t_inc:.2f}s")
-    t_full = execute_timed_sql(full_history_query)
-    print(f"Full Scan Query (unpartitioned):      {t_full:.2f}s")
-
-    # Clean up temp file
-    import os
-    if os.path.exists("temp_bench_payload.json"):
-        os.remove("temp_bench_payload.json")
+    t_inc = measure_query(incremental_query)
+    print(
+        f"Incremental read median (partition-scoped): "
+        f"{t_inc['median_client_elapsed_seconds']:.2f}s"
+    )
+    t_full = measure_query(full_history_query)
+    print(
+        f"Full read median (unpartitioned):          "
+        f"{t_full['median_client_elapsed_seconds']:.2f}s"
+    )
 
     results = {
+        "measurement_scope": "client elapsed time including API and warehouse wait",
+        "repetitions": 3,
         "skew": {"baseline": t_base, "salted": t_salt},
         "join": {"broadcast": t_broadcast, "merge": t_merge},
-        "refresh": {"incremental": t_inc, "full": t_full},
+        "refresh": {
+            "incremental_read": t_inc,
+            "full_history_read": t_full,
+            "note": "These are read benchmarks, not INSERT OVERWRITE refresh benchmarks.",
+        },
     }
     with open("benchmarks/measured_metrics.json", "w") as f:
         json.dump(results, f, indent=2)
