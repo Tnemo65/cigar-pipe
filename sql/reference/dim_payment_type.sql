@@ -1,16 +1,17 @@
 -- sql/reference/dim_payment_type.sql
--- Seed data for payment types per TLC data dictionary.
--- Loaded by scripts/load_reference_tables.py into taxi_lakehouse.reference.dim_payment_type
-
+-- Static seed, run once by scripts/load_reference_tables.py.
 CREATE TABLE IF NOT EXISTS taxi_lakehouse.reference.dim_payment_type (
-    payment_type_id INT NOT NULL,
-    payment_type_desc STRING NOT NULL
+  payment_type_id   INT     NOT NULL COMMENT 'PK -- TLC payment_type',
+  payment_type_name STRING  NOT NULL,
+  tip_is_recorded   BOOLEAN NOT NULL COMMENT 'true only for credit card -- design.md §8 rule 5'
 ) USING DELTA;
 
-INSERT OVERWRITE taxi_lakehouse.reference.dim_payment_type VALUES
-    (1, 'Credit card'),
-    (2, 'Cash'),
-    (3, 'No charge'),
-    (4, 'Dispute'),
-    (5, 'Unknown'),
-    (6, 'Voided trip');
+TRUNCATE TABLE taxi_lakehouse.reference.dim_payment_type;
+
+INSERT INTO taxi_lakehouse.reference.dim_payment_type VALUES
+  (1, 'Credit card', true),
+  (2, 'Cash',        false),
+  (3, 'No charge',   false),
+  (4, 'Dispute',     false),
+  (5, 'Unknown',     false),
+  (6, 'Voided trip', false);

@@ -1,62 +1,74 @@
-"""Download TLC yellow-taxi Parquet files and upload to GCS.
+"""Download TLC yellow-taxi Parquet files and reference data to GCS.
 
-Injectable Uploader for testability — production uses GCSUploader,
-tests pass a stub that records calls without touching GCS.
+Injectable Uploader for testability — production uses Google Cloud Storage,
+tests pass a stub that records calls without network/GCS dependencies.
 """
 from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
-from typing import Protocol
+from pathlib import Path
+from typing import Callable
 
 import requests
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.common import paths
+
 TLC_BASE = "https://d37ci6vzurychx.cloudfront.net/trip-data"
+ZONE_LOOKUP_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+
+Uploader = Callable[[bytes, str], None]
 
 
-class Uploader(Protocol):
-    def upload(self, data: bytes, destination: str) -> None: ...
+def _default_uploader(content: bytes, gcs_uri: str) -> None:
+    from google.cloud import storage
+
+    bucket_name, blob_path = gcs_uri.removeprefix("gs://").split("/", 1)
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_path)
+    blob.upload_from_string(content, content_type="application/octet-stream")
+    print(f"  uploaded {gcs_uri}")
 
 
-@dataclass
-class GCSUploader:
-    bucket: str
-
-    def upload(self, data: bytes, destination: str) -> None:
-        from google.cloud import storage  # lazy import — not needed for tests
-
-        client = storage.Client()
-        blob = client.bucket(self.bucket).blob(destination)
-        blob.upload_from_string(data, content_type="application/octet-stream")
-        print(f"  uploaded gs://{self.bucket}/{destination}")
-
-
-def _tlc_url(year: int, month: int) -> str:
-    return f"{TLC_BASE}/yellow_tripdata_{year}-{month:02d}.parquet"
-
-
-def download_and_upload(year: int, month: int, uploader: Uploader) -> None:
-    url = _tlc_url(year, month)
+def download_month(year: int, month: int, config: dict, uploader: Uploader = _default_uploader) -> str:
+    filename = f"yellow_tripdata_{year:04d}-{month:02d}.parquet"
+    url = f"{TLC_BASE}/{filename}"
     print(f"  downloading {url}")
-    resp = requests.get(url, timeout=120)
-    resp.raise_for_status()
-    destination = f"raw/yellow/year={year}/month={month:02d}/yellow_tripdata_{year}-{month:02d}.parquet"
-    uploader.upload(resp.content, destination)
+    response = requests.get(url, timeout=120)
+    if response.status_code != 200:
+        raise RuntimeError(f"failed to download {url}: HTTP {response.status_code}")
+    gcs_uri = f"{paths.raw_yellow_path(config).rstrip('/')}/{filename}"
+    uploader(response.content, gcs_uri)
+    return gcs_uri
+
+
+def download_zone_lookup(config: dict, uploader: Uploader = _default_uploader) -> str:
+    print(f"  downloading {ZONE_LOOKUP_URL}")
+    response = requests.get(ZONE_LOOKUP_URL, timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(f"failed to download {ZONE_LOOKUP_URL}: HTTP {response.status_code}")
+    gcs_uri = f"{paths.raw_ref_path(config).rstrip('/')}/taxi_zone_lookup.csv"
+    uploader(response.content, gcs_uri)
+    return gcs_uri
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Download TLC data to GCS")
-    p.add_argument("--bucket", required=True, help="GCS bucket name (without gs://)")
-    p.add_argument("--year", type=int, required=True)
+    p = argparse.ArgumentParser(description="Download TLC data and zone lookup to GCS")
+    p.add_argument("--config", default="configs/config.yaml", help="Path to config.yaml")
+    p.add_argument("--year", type=int, default=2024)
     p.add_argument("--start-month", type=int, default=1, dest="start_month")
-    p.add_argument("--end-month", type=int, default=12, dest="end_month")
+    p.add_argument("--end-month", type=int, default=2, dest="end_month")
+    p.add_argument("--skip-zone", action="store_true", dest="skip_zone")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    uploader = GCSUploader(bucket=args.bucket)
-    for month in range(args.start_month, args.end_month + 1):
-        download_and_upload(args.year, month, uploader)
+    cfg = paths.load_config(args.config)
+    if not args.skip_zone:
+        download_zone_lookup(cfg)
+    for m in range(args.start_month, args.end_month + 1):
+        print(download_month(args.year, m, cfg))
     print("Done.")

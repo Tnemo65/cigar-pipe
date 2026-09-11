@@ -1,17 +1,17 @@
 -- sql/reference/dim_rate_code.sql
--- Seed data for rate codes per TLC data dictionary.
--- Loaded by scripts/load_reference_tables.py into taxi_lakehouse.reference.dim_rate_code
-
+-- Static seed, run once by scripts/load_reference_tables.py.
 CREATE TABLE IF NOT EXISTS taxi_lakehouse.reference.dim_rate_code (
-    rate_code_id INT NOT NULL,
-    rate_code_desc STRING NOT NULL
+  rate_code_id   INT     NOT NULL COMMENT 'PK -- TLC RatecodeID',
+  rate_code_name STRING  NOT NULL,
+  is_flat_fare   BOOLEAN NOT NULL COMMENT 'true for JFK/Newark -- design.md §8 rule 3'
 ) USING DELTA;
 
-INSERT OVERWRITE taxi_lakehouse.reference.dim_rate_code VALUES
-    (1, 'Standard rate'),
-    (2, 'JFK'),
-    (3, 'Newark'),
-    (4, 'Nassau or Westchester'),
-    (5, 'Negotiated fare'),
-    (6, 'Group ride'),
-    (99, 'Unknown');
+TRUNCATE TABLE taxi_lakehouse.reference.dim_rate_code;
+
+INSERT INTO taxi_lakehouse.reference.dim_rate_code VALUES
+  (1, 'Standard',              false),
+  (2, 'JFK',                   true),
+  (3, 'Newark',                true),
+  (4, 'Nassau or Westchester', false),
+  (5, 'Negotiated fare',       false),
+  (6, 'Group ride',            false);
