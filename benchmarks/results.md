@@ -1,29 +1,46 @@
 # Benchmark Results
 
-Measured on Databricks Serverless Compute / SQL Warehouse against NYC TLC Yellow Taxi production data in `taxi_lakehouse.silver.trips_clean` (2,700,534 valid rows).
+These results are historical observations, not a production performance guarantee. The
+benchmark runner records **client elapsed time** after the Databricks SQL statement
+reaches a terminal state; this includes API, network, warehouse queue, and query time.
+Execution-stage metrics and shuffle metrics require Databricks query profiles and are
+not produced by the local runner.
 
-## 1. Zone-driven data skew (design.md §9.1)
+## 1. Zone-driven data skew
 
-| Tier | Baseline (s) | Salted (s) | Improvement | Notes |
-|---|---|---|---|---|
-| Medium (2.7M rows) | 2.02s | 1.80s | ~11% speedup | 8-bucket salt on `pmod(hash(trip_id), 8)` mitigates hot-spot partitions |
-| Large (Multi-month) | Projected ~24s | Projected ~18s | ~25% speedup | Skew mitigation compounds as partition volume scales |
+| Dataset | Baseline | Salted | Interpretation |
+|---|---:|---:|---|
+| 2.7M rows, historical single run | 2.02s | 1.80s | Historical observation; repeat before using as a capacity claim |
+| Multi-month | Not measured | Not measured | No projection is presented as a measured result |
 
-## 2. Join-strategy proof: broadcast vs sort-merge (design.md §9.2)
+The salted query uses eight buckets from `pmod(hash(trip_id), 8)`. Salting adds a
+second aggregation and is only beneficial when the input distribution actually has a
+problematic hot key. It should be selected from query-profile evidence, not assumed
+for every workload.
 
-Procedure: Run `sql/gold/revenue_by_zone_hour.sql` join with reference dimension `dim_zone` (265 rows).
+## 2. Join strategy
 
-| Tier | Broadcast: stage duration | Broadcast: shuffle bytes | Sort-merge: stage duration | Sort-merge: shuffle bytes | Notes |
-|---|---|---|---|---|---|
-| Medium (2.7M rows) | 4.73s | 0 bytes (No shuffle for dim table) | 3.23s | ~14.2 MB shuffle | Small dim table broadcast avoids network shuffle; engine auto-optimizes |
-| Large (Multi-month) | Projected ~38s | 0 bytes | Projected ~46s | ~180 MB shuffle | Broadcast join avoids full table shuffle as Silver grows |
+The historical single-run observation was:
 
-## 3. Incremental vs full-recompute Gold refresh (design.md §9.3)
+| Strategy | Historical client elapsed | Interpretation |
+|---|---:|---|
+| Broadcast | 4.73s | Dimension-side shuffle avoided in the observed plan |
+| Sort-merge | 3.23s | Faster in this observed run despite shuffle |
 
-Procedure: Compare static partition overwrite (`INSERT OVERWRITE ... PARTITION (pickup_month = '2024-01-01')`) vs unpartitioned full-scan recompute.
+Zero dimension shuffle does not prove lower wall-clock time. Repeat the comparison with
+warm-up, multiple measurements, identical cache state, and query-profile metrics before
+changing a production join strategy.
 
-| Metric | Incremental (1 new month) | Full recompute (1 month current) | Full recompute (Projected 12 months) |
-|---|---|---|---|
-| Wall-clock | 3.58s | 3.55s | ~42.0s |
-| Scanned Scope | 1 partition (2.7M rows) | Full table (2.7M rows) | Full history (~32M rows) |
-| Idempotency | Safe partition replace | Truncates entire table | High risk of table lock |
+## 3. Incremental versus full read
+
+The current benchmark runner measures read queries, not Gold refresh writes:
+
+| Query | Historical client elapsed | Scope |
+|---|---:|---|
+| Partition-filtered read | 3.58s | One month |
+| Full-history read | 3.55s | All available history |
+
+These numbers do **not** prove `INSERT OVERWRITE` duration, Delta commit behavior,
+partition replacement, or write idempotency. A valid refresh benchmark must execute the
+actual write against an isolated benchmark target and record the Databricks operation
+profile.

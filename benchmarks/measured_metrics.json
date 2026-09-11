@@ -1,14 +1,19 @@
 {
+  "status": "historical_single_run_legacy_format",
+  "measurement_scope": "client elapsed time from the original one-run benchmark; execution-stage metrics were not captured",
+  "data_scope": "2,700,534 valid rows",
   "skew": {
-    "baseline": 2.0217323303222656,
-    "salted": 1.796881914138794
+    "baseline_seconds": 2.0217323303222656,
+    "salted_seconds": 1.796881914138794
   },
   "join": {
-    "broadcast": 4.7347753047943115,
-    "merge": 3.227069616317749
+    "broadcast_seconds": 4.7347753047943115,
+    "sort_merge_seconds": 3.227069616317749
   },
   "refresh": {
-    "incremental": 3.5809028148651123,
-    "full": 3.550651788711548
-  }
+    "incremental_read_seconds": 3.5809028148651123,
+    "full_history_read_seconds": 3.550651788711548,
+    "note": "These are read timings, not INSERT OVERWRITE refresh timings."
+  },
+  "rerun_required": true
 }

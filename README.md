@@ -1,6 +1,6 @@
 # NYC Taxi Lakehouse
 
-GCS → Bronze Delta (Auto Loader) → Silver (PySpark MERGE dedup) → Gold (SQL INSERT OVERWRITE) → BigQuery
+GCS → Bronze Delta (Auto Loader) → Silver (PySpark MERGE dedup) → Gold (SQL INSERT OVERWRITE) → GCS Parquet partitions → BigLake external tables → BigQuery
 
 ## Architecture
 
@@ -17,7 +17,10 @@ Silver (Delta, deduplicated via MERGE on trip_id SHA-256)
 Gold marts (INSERT OVERWRITE by partition month)
       │
       ▼
-BigQuery (export via Spark BigQuery connector)
+GCS Parquet (one Hive partition per touched month)
+      │
+      ▼
+BigLake external tables → BigQuery
 ```
 
 ## Setup
@@ -36,5 +39,5 @@ uv run pytest tests/
 
 ```bash
 databricks bundle deploy
-databricks bundle run taxi_lakehouse_pipeline
+databricks bundle run taxi_pipeline
 ```
