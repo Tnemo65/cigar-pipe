@@ -1,7 +1,7 @@
 """Silver cleaning: compute trip_id, apply validity rules, cast money, MERGE.
 
 process_batch  — pure transform; returns (silver_valid, quarantine, touched_months)
-write_batch    — DeltaTable MERGE into trips_clean + append to trips_quarantine
+write_batch    — idempotent DeltaTable MERGE into trips_clean and trips_quarantine
 """
 from __future__ import annotations
 
@@ -39,19 +39,28 @@ class _DefaultSilverWriter:
         if not self.spark.catalog.tableExists(target_table):
             valid_df.write.format("delta").mode("append").partitionBy("pickup_month").saveAsTable(target_table)
             return
-        try:
-            target = DeltaTable.forName(self.spark, target_table)
-            (
-                target.alias("t")
-                .merge(valid_df.alias("s"), "t.trip_id = s.trip_id")
-                .whenNotMatchedInsertAll()
-                .execute()
-            )
-        except Exception:
-            valid_df.write.format("delta").mode("append").partitionBy("pickup_month").saveAsTable(target_table)
+        target = DeltaTable.forName(self.spark, target_table)
+        (
+            target.alias("t")
+            .merge(valid_df.alias("s"), "t.trip_id = s.trip_id")
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
 
     def append_quarantine(self, quar_df: DataFrame, target_table: str) -> None:
-        quar_df.write.format("delta").mode("append").saveAsTable(target_table)
+        if not quar_df.take(1):
+            return
+        if not self.spark.catalog.tableExists(target_table):
+            quar_df.write.format("delta").mode("append").saveAsTable(target_table)
+            return
+
+        target = DeltaTable.forName(self.spark, target_table)
+        (
+            target.alias("t")
+            .merge(quar_df.alias("s"), "t.trip_id = s.trip_id")
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
 
 
 def process_batch(

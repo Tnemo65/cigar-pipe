@@ -1,9 +1,11 @@
 # tests/test_dedup.py
 from datetime import datetime
+from unittest.mock import patch
 
+import pytest
 from delta.tables import DeltaTable
 
-from src.transform.silver_clean import process_batch, write_batch
+from src.transform.silver_clean import _DefaultSilverWriter, process_batch
 
 DIM_ZONE_ROWS = [(4, "Manhattan", "Alphabet City", "Yellow Zone", False)]
 DIM_ZONE_COLUMNS = ["location_id", "borough", "zone", "service_zone", "is_sentinel"]
@@ -100,3 +102,31 @@ def test_a_genuinely_new_row_in_a_later_run_is_still_inserted(spark, tmp_delta_p
         )
     finally:
         spark.sql("DROP TABLE IF EXISTS local_silver_test_2")
+
+
+def test_quarantine_merge_is_idempotent(spark, tmp_delta_path):
+    writer = _DefaultSilverWriter(spark)
+    quarantine = spark.createDataFrame([("trip-1", "BAD")], ["trip_id", "reason_code"])
+    quarantine.write.format("delta").save(tmp_delta_path)
+    location = tmp_delta_path.replace("\\", "/")
+    spark.sql(f"CREATE TABLE local_quarantine_test USING DELTA LOCATION '{location}'")
+
+    try:
+        writer.append_quarantine(quarantine, "local_quarantine_test")
+        assert spark.table("local_quarantine_test").count() == 1
+    finally:
+        spark.sql("DROP TABLE IF EXISTS local_quarantine_test")
+
+
+def test_existing_table_merge_failure_is_not_converted_to_append(spark):
+    writer = _DefaultSilverWriter(spark)
+    valid_df = spark.createDataFrame([(1,)], ["trip_id"])
+
+    with patch.object(spark.catalog, "tableExists", return_value=True), patch(
+        "src.transform.silver_clean.DeltaTable.forName",
+        side_effect=RuntimeError("transaction conflict"),
+    ), patch.object(valid_df.write, "format") as format_writer:
+        with pytest.raises(RuntimeError, match="transaction conflict"):
+            writer.merge(valid_df, "taxi_lakehouse.silver.trips_clean")
+
+    format_writer.assert_not_called()
