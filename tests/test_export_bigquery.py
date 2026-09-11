@@ -1,7 +1,11 @@
 # tests/test_export_bigquery.py
 from unittest.mock import MagicMock
 
-from src.export.export_bigquery import _partition_export_path, export_month
+from src.export.export_bigquery import (
+    _partition_export_path,
+    _publication_marker_path,
+    export_month,
+)
 
 
 def test_export_month_filters_to_the_right_partition_and_calls_writer(spark):
@@ -36,6 +40,18 @@ def test_partition_export_path_is_table_and_month_scoped():
     assert path == (
         "gs://taxi-data-engineer-taxi-lake/"
         "gold_export/revenue_by_zone_hour/pickup_month=20240101"
+    )
+
+
+def test_publication_marker_is_outside_parquet_prefix():
+    marker = _publication_marker_path(
+        "gs://lake/gold_export/revenue_by_zone_hour/pickup_month=20240101",
+        {"gcp": {"bucket": "lake"}},
+    )
+
+    assert marker == (
+        "gs://lake/gold_publication/revenue_by_zone_hour/"
+        "pickup_month=20240101/_PUBLISHED.json"
     )
 
 

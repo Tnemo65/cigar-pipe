@@ -11,6 +11,13 @@ if str(_root) not in sys.path:
 from src.common import paths
 
 
+def table_names(config: dict | None = None) -> tuple[str, str]:
+    return (
+        paths.catalog_table("silver", "trips_clean", config),
+        paths.catalog_table("silver", "trips_quarantine", config),
+    )
+
+
 def compute_quarantine_rate(
     spark: SparkSession,
     month: str,
@@ -90,8 +97,8 @@ if __name__ == "__main__":
         except Exception:
             months = []
 
-        if not months:
-            clean_tbl = paths.catalog_table("silver", "trips_clean")
+        if not months and cfg.get("ingestion", {}).get("allow_full_history_fallback", False):
+            clean_tbl = paths.catalog_table("silver", "trips_clean", cfg)
             if spark.catalog.tableExists(clean_tbl):
                 months = [
                     str(r.pickup_month)[:10]

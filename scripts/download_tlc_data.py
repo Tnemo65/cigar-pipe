@@ -14,22 +14,21 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.common import paths
+from src.ingestion.raw_landing import LandingResult, land_bytes
 
 TLC_BASE = "https://d37ci6vzurychx.cloudfront.net/trip-data"
 ZONE_LOOKUP_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
 
-Uploader = Callable[[bytes, str], None]
+Uploader = Callable[[bytes, str], LandingResult]
 
 
-def _default_uploader(content: bytes, gcs_uri: str) -> None:
-    from google.cloud import storage
+def _default_uploader(content: bytes, gcs_uri: str) -> LandingResult:
+    from src.ingestion.raw_landing import gcs_immutable_uploader
 
-    bucket_name, blob_path = gcs_uri.removeprefix("gs://").split("/", 1)
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
-    blob.upload_from_string(content, content_type="application/octet-stream")
-    print(f"  uploaded {gcs_uri}")
+    result = land_bytes(content, gcs_uri, gcs_immutable_uploader)
+    state = "already landed" if result.already_landed else "uploaded"
+    print(f"  {state} {gcs_uri} checksum={result.checksum}")
+    return result
 
 
 def download_month(year: int, month: int, config: dict, uploader: Uploader = _default_uploader) -> str:

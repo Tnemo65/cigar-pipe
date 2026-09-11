@@ -6,6 +6,14 @@ gcp:
 
 databricks:
   catalog: "taxi_lakehouse"
+  use_notifications: false
+  source_mode: "available_now"
+
+ingestion:
+  late_arrival_months: 2
+  require_immutable_raw_objects: true
+  api_simulation_enabled: false
+  allow_full_history_fallback: false
 
 bigquery:
   dataset: "taxi_analytics"

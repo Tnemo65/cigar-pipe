@@ -15,7 +15,7 @@ gcloud storage buckets create "gs://${BUCKET}" \
     --project="${GCP_PROJECT_ID}" \
     --location="${REGION}" \
     --uniform-bucket-level-access \
-    --no-public-access-prevention 2>/dev/null || echo "  bucket already exists, skipping"
+    --public-access-prevention 2>/dev/null || echo "  bucket already exists, skipping"
 
 echo "==> Creating Pub/Sub topic: ${TOPIC}"
 gcloud pubsub topics create "${TOPIC}" \
@@ -26,7 +26,8 @@ gcloud pubsub subscriptions create "${SUBSCRIPTION}" \
     --topic="${TOPIC}" \
     --project="${GCP_PROJECT_ID}" \
     --message-retention-duration=7d \
-    --ack-deadline=600 2>/dev/null || echo "  subscription already exists, skipping"
+    --ack-deadline=600 \
+    --enable-exactly-once-delivery 2>/dev/null || echo "  subscription already exists, skipping"
 
 echo "==> Linking GCS bucket notifications -> Pub/Sub topic"
 # Allow GCS service account to publish to the topic

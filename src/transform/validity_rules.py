@@ -23,7 +23,16 @@ def with_trip_id(df: DataFrame) -> DataFrame:
         "|",
         *[F.coalesce(F.col(c).cast("string"), F.lit("NULL")) for c in BUSINESS_KEY_COLUMNS],
     )
-    return df.withColumn("trip_id", F.sha2(concat_expr, 256))
+    with_id = df.withColumn("trip_id", F.sha2(concat_expr, 256))
+    if "_source_object_id" in df.columns:
+        with_id = with_id.withColumn(
+            "_source_event_id",
+            F.sha2(
+                F.concat_ws("|", F.col("_source_object_id"), F.col("trip_id")),
+                256,
+            ),
+        )
+    return with_id
 
 
 def flag_implausible_trips(df: DataFrame) -> DataFrame:

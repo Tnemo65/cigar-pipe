@@ -35,6 +35,11 @@ uv sync --group dev
 uv run pytest tests/
 ```
 
+## Operations
+
+See `docs/operations.md` for delivery semantics, replay invariants, daily operation,
+scale-test tiers, CI/CD promotion, and recovery requirements.
+
 ## Deploy pipeline
 
 ```bash

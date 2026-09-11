@@ -11,14 +11,27 @@ if str(_root) not in sys.path:
 from src.common import paths
 
 
-def run_gold_sql_file(spark: SparkSession, sql_path: str, month: str) -> None:
+def gold_ddls(catalog: str = "taxi_lakehouse") -> list[str]:
+    return [ddl.replace("taxi_lakehouse", catalog) for ddl in GOLD_DDLS]
+
+
+def run_gold_sql_file(
+    spark: SparkSession,
+    sql_path: str,
+    month: str,
+    catalog: str = "taxi_lakehouse",
+) -> None:
     """design.md §12.5 -- runs one Gold mart's parameterized SQL for one
     month. :month substitution is a plain string replace here (Databricks SQL
     tasks handle real parameter binding; this is the local/portable runner)."""
     p = Path(sql_path)
     if not p.is_absolute() and not p.exists():
         p = _root / sql_path
-    sql_text = p.read_text().replace(":month", f"'{month}'")
+    sql_text = (
+        p.read_text()
+        .replace("taxi_lakehouse", catalog)
+        .replace(":month", f"'{month}'")
+    )
     for statement in sql_text.split(";"):
         statement = statement.strip()
         if statement:
@@ -73,7 +86,8 @@ if __name__ == "__main__":
     spark = SparkSession.builder.getOrCreate()
 
     try:
-        for ddl in GOLD_DDLS:
+        catalog = paths.catalog_name(cfg)
+        for ddl in gold_ddls(catalog):
             spark.sql(ddl)
 
         try:
@@ -86,7 +100,7 @@ if __name__ == "__main__":
         except Exception:
             months = []
 
-        clean_tbl = paths.catalog_table("silver", "trips_clean")
+        clean_tbl = paths.catalog_table("silver", "trips_clean", cfg)
         if spark.catalog.tableExists(clean_tbl):
             month_counts = {
                 str(r.pickup_month)[:10]: r["count"]
@@ -94,7 +108,10 @@ if __name__ == "__main__":
                 if r.pickup_month
             }
             if not months:
-                months = [m for m, cnt in month_counts.items() if cnt >= 100]
+                if cfg.get("ingestion", {}).get("allow_full_history_fallback", False):
+                    months = [m for m, cnt in month_counts.items() if cnt >= 100]
+                else:
+                    months = []
             else:
                 months = [m for m in months if month_counts.get(m, 0) >= 100]
 
@@ -104,7 +121,7 @@ if __name__ == "__main__":
                 "sql/gold/fare_integrity_daily.sql",
                 "sql/gold/payment_mix_monthly.sql",
             ):
-                run_gold_sql_file(spark, sql_file, m)
+                run_gold_sql_file(spark, sql_file, m, paths.catalog_name(cfg))
         print(f"gold marts refreshed for months: {months}")
     except Exception:
         status = "FAILED"

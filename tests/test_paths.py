@@ -5,6 +5,13 @@ def test_catalog_table_builds_three_level_name():
     assert paths.catalog_table("silver", "trips_clean") == "taxi_lakehouse.silver.trips_clean"
 
 
+def test_catalog_table_uses_configured_catalog():
+    config = {"databricks": {"catalog": "dev_lakehouse"}}
+    assert paths.catalog_table("silver", "trips_clean", config) == (
+        "dev_lakehouse.silver.trips_clean"
+    )
+
+
 def test_raw_yellow_path_uses_configured_bucket():
     config = {"gcp": {"bucket": "demo-proj-taxi-lake"}}
     assert paths.raw_yellow_path(config) == "gs://demo-proj-taxi-lake/raw/yellow/"

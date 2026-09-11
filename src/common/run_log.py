@@ -16,10 +16,38 @@ def log_run(
     started_at: datetime,
     ended_at: datetime,
     table_name: str = None,
+    pipeline_run_id: str | None = None,
+    batch_id: str | None = None,
+    source_snapshot_id: str | None = None,
+    rows_deduplicated: int = 0,
 ) -> None:
     table_name = table_name or paths.catalog_table("reference", "pipeline_run_log")
     row = spark.createDataFrame(
-        [(task_name, rows_in, rows_out, rows_quarantined, status, started_at, ended_at)],
-        ["task_name", "rows_in", "rows_out", "rows_quarantined", "status", "started_at", "ended_at"],
+        [(
+            pipeline_run_id,
+            task_name,
+            batch_id,
+            source_snapshot_id,
+            rows_in,
+            rows_out,
+            rows_deduplicated,
+            rows_quarantined,
+            status,
+            started_at,
+            ended_at,
+        )],
+        [
+            "pipeline_run_id",
+            "task_name",
+            "batch_id",
+            "source_snapshot_id",
+            "rows_in",
+            "rows_out",
+            "rows_deduplicated",
+            "rows_quarantined",
+            "status",
+            "started_at",
+            "ended_at",
+        ],
     )
     row.write.format("delta").mode("append").saveAsTable(table_name)

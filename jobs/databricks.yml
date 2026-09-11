@@ -7,10 +7,17 @@ sync:
     - ../src
     - ../sql
     - ../configs
+    - ../scripts
 
 variables:
   catalog:
     default: taxi_lakehouse
+  environment:
+    default: dev
+  processing_date:
+    default: ""
+  schedule_pause_status:
+    default: PAUSED
 
 resources:
   jobs:
@@ -29,9 +36,9 @@ resources:
 
 
       schedule:
-        quartz_cron_expression: "0 0 6 1 * ?"
+        quartz_cron_expression: "0 0 6 * * ?"
         timezone_id: "America/New_York"
-        pause_status: PAUSED
+        pause_status: ${var.schedule_pause_status}
 
       email_notifications:
         on_failure:
@@ -86,3 +93,25 @@ resources:
 targets:
   dev:
     default: true
+    variables:
+      catalog: taxi_lakehouse
+      environment: dev
+      processing_date: ""
+      schedule_pause_status: PAUSED
+
+  staging:
+    variables:
+      catalog: taxi_lakehouse_staging
+      environment: staging
+      processing_date: ""
+      schedule_pause_status: PAUSED
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: taxi_lakehouse
+      environment: prod
+      processing_date: ""
+      schedule_pause_status: UNPAUSED

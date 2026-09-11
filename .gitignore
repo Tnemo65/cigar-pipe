@@ -13,3 +13,5 @@ metastore_db/
 .claude/
 interview/
 docs/
+implementation.md
+.kilo/

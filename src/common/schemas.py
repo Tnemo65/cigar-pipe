@@ -57,6 +57,8 @@ SILVER_RENAME: dict[str, str] = {
     "improvement_surcharge": "improvement_surcharge_amount",
     "congestion_surcharge": "congestion_surcharge_amount",
     "cbd_congestion_fee": "cbd_congestion_fee_amount",
+    "Airport_fee": "airport_fee_amount",
+    "airport_fee": "airport_fee_amount",
     "total_amount": "total_amount",
 }
 
@@ -71,6 +73,7 @@ MONEY_COLUMNS_SILVER: list[str] = [
     "improvement_surcharge_amount",
     "congestion_surcharge_amount",
     "cbd_congestion_fee_amount",
+    "airport_fee_amount",
     "total_amount",
 ]
 

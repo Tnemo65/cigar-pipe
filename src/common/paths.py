@@ -6,6 +6,10 @@ import yaml
 CATALOG = "taxi_lakehouse"
 
 
+def catalog_name(config: dict[str, Any] | None = None) -> str:
+    return (config or {}).get("databricks", {}).get("catalog", CATALOG)
+
+
 def load_config(path: str = "configs/config.yaml") -> dict[str, Any]:
     p = Path(path)
     if not p.is_absolute() and not p.exists():
@@ -18,8 +22,8 @@ def load_config(path: str = "configs/config.yaml") -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def catalog_table(schema: str, table: str) -> str:
-    return f"{CATALOG}.{schema}.{table}"
+def catalog_table(schema: str, table: str, config: dict[str, Any] | None = None) -> str:
+    return f"{catalog_name(config)}.{schema}.{table}"
 
 
 def _bucket_uri(config: dict[str, Any], *parts: str) -> str:

@@ -44,14 +44,24 @@ def build_bronze_stream(spark: SparkSession, config: dict):
     raw = reader.load(paths.raw_yellow_path(config)).withColumn(
         "_source_file", F.col("_metadata.file_path")
     )
-    enriched = add_lineage_columns(raw)
+    enriched = (
+        add_lineage_columns(raw)
+        .withColumn(
+            "_source_object_id",
+            F.sha2(F.col("_metadata.file_path"), 256),
+        )
+        .withColumn(
+            "_source_object_version",
+            F.col("_metadata.file_modification_time").cast("string"),
+        )
+    )
 
     return (
         enriched.writeStream.format("delta")
         .option("checkpointLocation", paths.checkpoint_path("bronze", config))
         .option("mergeSchema", "true")
         .trigger(availableNow=True)
-        .toTable(paths.catalog_table("bronze", "trips_raw"))
+        .toTable(paths.catalog_table("bronze", "trips_raw", config))
     )
 
 

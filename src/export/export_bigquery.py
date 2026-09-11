@@ -1,5 +1,7 @@
 # src/export/export_bigquery.py
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -23,6 +25,14 @@ def _partition_export_path(options: dict, config: dict) -> str:
     return f"gs://{config['gcp']['bucket']}/gold_export/{table_name}/pickup_month={partition}"
 
 
+def _publication_marker_path(export_path: str, config: dict) -> str:
+    """Keep the commit marker outside the Parquet wildcard prefix."""
+    table_name = export_path.rstrip("/").split("/")[-2]
+    partition = export_path.rstrip("/").split("/")[-1]
+    bucket = config["gcp"]["bucket"]
+    return f"gs://{bucket}/gold_publication/{table_name}/{partition}/_PUBLISHED.json"
+
+
 def _default_writer(df: DataFrame, options: dict) -> None:
     """Write one Gold partition to GCS for a BigLake external table.
 
@@ -36,7 +46,23 @@ def _default_writer(df: DataFrame, options: dict) -> None:
     table_name = options["table"].split(".")[-1]
     print(f"Writing {table_name} partition to {export_path}...")
     df.write.format("parquet").mode("overwrite").save(export_path)
-    print(f"Successfully exported {table_name} partition to {export_path}.")
+    row_count = df.count()
+    marker = {
+        "table": table_name,
+        "partition": options["datePartition"],
+        "row_count": row_count,
+        "export_path": export_path,
+        "published_at": datetime.now(timezone.utc).isoformat(),
+    }
+    marker_path = _publication_marker_path(export_path, cfg)
+    from pyspark.dbutils import DBUtils
+
+    DBUtils(df.sparkSession).fs.put(
+        marker_path,
+        json.dumps(marker, sort_keys=True),
+        overwrite=True,
+    )
+    print(f"Successfully exported and published {table_name} partition to {export_path}.")
 
     # Spark writes marker files alongside data files.  They are not part of the
     # external table schema, but cleanup failure must remain visible as a warning.
@@ -94,7 +120,8 @@ if __name__ == "__main__":
         except Exception:
             months = []
 
-        clean_tbl = paths.catalog_table("silver", "trips_clean")
+            clean_tbl = paths.catalog_table("silver", "trips_clean", cfg)
+
         if spark.catalog.tableExists(clean_tbl):
             month_counts = {
                 str(r.pickup_month)[:10]: r["count"]
@@ -102,13 +129,21 @@ if __name__ == "__main__":
                 if r.pickup_month
             }
             if not months:
-                months = [m for m, cnt in month_counts.items() if cnt >= 100]
+                if cfg.get("ingestion", {}).get("allow_full_history_fallback", False):
+                    months = [m for m, cnt in month_counts.items() if cnt >= 100]
+                else:
+                    months = []
             else:
                 months = [m for m in months if month_counts.get(m, 0) >= 100]
 
         for m in months:
             for mart in ("revenue_by_zone_hour", "fare_integrity_daily", "payment_mix_monthly"):
-                export_month(spark, paths.catalog_table("gold", mart), bq_dataset, m)
+                export_month(
+                    spark,
+                    paths.catalog_table("gold", mart, cfg),
+                    bq_dataset,
+                    m,
+                )
         print(f"exported to BigQuery for months: {months}")
     except Exception:
         status = "FAILED"

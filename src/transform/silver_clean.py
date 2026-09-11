@@ -81,12 +81,21 @@ def process_batch(
     valid = checked.filter(F.col("reason_code").isNull())
     invalid = checked.filter(F.col("reason_code").isNotNull())
 
+    # A single microbatch may contain duplicate deliveries. Keep one row per
+    # stable source event/business key before the first table write or MERGE.
+    # source lineage identifies delivery provenance; trip_id identifies the
+    # canonical business entity and therefore remains the Silver dedup key.
+    valid = valid.dropDuplicates(["trip_id"])
+    invalid = invalid.dropDuplicates(["trip_id", "reason_code"])
+
     silver_cols = [
         F.col(bronze_col).alias(silver_col)
         for bronze_col, silver_col in SILVER_RENAME.items()
         if bronze_col in bronze_batch.columns
     ]
-    passthrough = [c for c in ("_source_file", "_ingested_at") if c in bronze_batch.columns]
+    # Source-object lineage remains in Bronze. Keep the established Silver
+    # schema stable until an explicit migration is deployed for new metadata.
+    passthrough = [c for c in ("_source_file", "_ingested_at") if c in checked.columns]
 
     silver_valid = valid.select("trip_id", *silver_cols, *passthrough)
     for money_col in MONEY_COLUMNS_SILVER:
@@ -117,12 +126,13 @@ def write_batch(
     silver_valid: DataFrame,
     quarantine: DataFrame,
     writer: SilverWriter | None = None,
+    config: dict | None = None,
 ) -> None:
     """design.md §11 layer 2: cross-run MERGE anti-join on trip_id, not
     dropDuplicates() scoped to the micro-batch."""
     w = writer or _DefaultSilverWriter(spark)
-    target_clean = paths.catalog_table("silver", "trips_clean")
-    target_quar = paths.catalog_table("silver", "trips_quarantine")
+    target_clean = paths.catalog_table("silver", "trips_clean", config)
+    target_quar = paths.catalog_table("silver", "trips_quarantine", config)
     w.merge(silver_valid, target_clean)
     w.append_quarantine(quarantine, target_quar)
 
@@ -141,9 +151,9 @@ if __name__ == "__main__":
     spark = SparkSession.builder.getOrCreate()
 
     try:
-        dim_zone_df = spark.table(paths.catalog_table("reference", "dim_zone"))
-        dim_rate_df = spark.table(paths.catalog_table("reference", "dim_rate_code"))
-        dim_pay_df = spark.table(paths.catalog_table("reference", "dim_payment_type"))
+        dim_zone_df = spark.table(paths.catalog_table("reference", "dim_zone", cfg))
+        dim_rate_df = spark.table(paths.catalog_table("reference", "dim_rate_code", cfg))
+        dim_pay_df = spark.table(paths.catalog_table("reference", "dim_payment_type", cfg))
 
         all_months: set = set()
 
@@ -155,13 +165,13 @@ if __name__ == "__main__":
             )
             v_count = s_valid.count()
             q_count = s_quarantine.count()
-            write_batch(spark, s_valid, s_quarantine)
+            write_batch(spark, s_valid, s_quarantine, config=cfg)
             all_months.update(months)
             total_in += batch_count
             total_valid += v_count
             total_quar += q_count
 
-        bronze_stream = spark.readStream.table(paths.catalog_table("bronze", "trips_raw"))
+        bronze_stream = spark.readStream.table(paths.catalog_table("bronze", "trips_raw", cfg))
         query = (
             bronze_stream.writeStream.foreachBatch(_foreach_batch)
             .option("checkpointLocation", paths.checkpoint_path("silver", cfg))

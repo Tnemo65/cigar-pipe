@@ -62,6 +62,21 @@ def test_process_batch_renames_and_casts_money_to_decimal(spark):
     assert row.rate_code_id == 1
     assert str(silver_valid.schema["fare_amount"].dataType) == "DecimalType(10,2)"
     assert row.pickup_month == datetime(2024, 1, 1).date()
+    assert row.airport_fee_amount == 0.0
+
+
+def test_process_batch_deduplicates_duplicate_source_events(spark):
+    dim_zone = spark.createDataFrame(DIM_ZONE_ROWS, DIM_ZONE_COLUMNS)
+    dim_rate = spark.createDataFrame(DIM_RATE_ROWS, DIM_RATE_COLUMNS)
+    dim_pay = spark.createDataFrame(DIM_PAY_ROWS, DIM_PAY_COLUMNS)
+    duplicate = {**VALID_ROW, "_source_object_id": "object-1"}
+    replay = {**VALID_ROW, "_source_object_id": "object-2"}
+    batch = spark.createDataFrame([duplicate, replay])
+
+    silver_valid, quarantine, _ = process_batch(batch, dim_zone, dim_rate, dim_pay)
+
+    assert silver_valid.count() == 1
+    assert quarantine.count() == 0
 
 
 def test_process_batch_returns_distinct_touched_months(spark):
