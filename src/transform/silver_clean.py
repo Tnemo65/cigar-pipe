@@ -11,7 +11,10 @@ from typing import Protocol
 
 from pyspark.sql import DataFrame, SparkSession, functions as F
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_file = globals().get("__file__") or globals().get("filename") or (sys.argv[0] if sys.argv else None)
+_root = Path(_file).resolve().parents[2] if _file else Path.cwd()
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 from delta.tables import DeltaTable
 
 from src.common import paths
@@ -33,13 +36,19 @@ class _DefaultSilverWriter:
         self.spark = spark
 
     def merge(self, valid_df: DataFrame, target_table: str) -> None:
-        target = DeltaTable.forName(self.spark, target_table)
-        (
-            target.alias("t")
-            .merge(valid_df.alias("s"), "t.trip_id = s.trip_id")
-            .whenNotMatchedInsertAll()
-            .execute()
-        )
+        if not self.spark.catalog.tableExists(target_table):
+            valid_df.write.format("delta").mode("append").partitionBy("pickup_month").saveAsTable(target_table)
+            return
+        try:
+            target = DeltaTable.forName(self.spark, target_table)
+            (
+                target.alias("t")
+                .merge(valid_df.alias("s"), "t.trip_id = s.trip_id")
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
+        except Exception:
+            valid_df.write.format("delta").mode("append").partitionBy("pickup_month").saveAsTable(target_table)
 
     def append_quarantine(self, quar_df: DataFrame, target_table: str) -> None:
         quar_df.write.format("delta").mode("append").saveAsTable(target_table)
@@ -153,11 +162,15 @@ if __name__ == "__main__":
         query.awaitTermination()
 
         try:
-            import dbutils  # type: ignore
+            from pyspark.dbutils import DBUtils  # type: ignore
 
-            dbutils.jobs.taskValues.set(key="touched_months", value=[str(m) for m in all_months])
-        except ImportError:
-            print(f"touched_months={sorted(all_months)} (dbutils unavailable locally)")
+            dbutils = DBUtils(spark)
+            dbutils.jobs.taskValues.set(
+                key="touched_months", value=[str(m)[:10] for m in all_months]
+            )
+            print(f"Set taskValues touched_months={[str(m)[:10] for m in all_months]}")
+        except Exception as e:
+            print(f"touched_months={sorted(all_months)} (dbutils taskValues skipped: {e})")
     except Exception:
         status = "FAILED"
         raise

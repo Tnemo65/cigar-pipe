@@ -9,7 +9,10 @@ from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession, functions as F
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_file = globals().get("__file__") or globals().get("filename") or (sys.argv[0] if sys.argv else None)
+_root = Path(_file).resolve().parents[2] if _file else Path.cwd()
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 from src.common import paths
 from src.common.schemas import BRONZE_SCHEMA
 
@@ -27,16 +30,19 @@ def build_bronze_stream(spark: SparkSession, config: dict):
     """design.md §6.1, §12.4 -- file-notification Auto Loader, schemaLocation +
     schemaHints (cbd_congestion_fee) + rescuedDataColumn,
     append to Bronze with mergeSchema, trigger=AvailableNow."""
-    raw = (
+    reader = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
         .option("cloudFiles.schemaLocation", paths.schema_location_path("bronze", config))
         .schema(BRONZE_SCHEMA)
         .option("cloudFiles.schemaHints", "cbd_congestion_fee DOUBLE")
         .option("cloudFiles.rescuedDataColumn", "_rescued_data")
-        .option("cloudFiles.useNotifications", "true")
-        .load(paths.raw_yellow_path(config))
-        .withColumn("_source_file", F.col("_metadata.file_path"))
+    )
+    if config.get("databricks", {}).get("use_notifications", False):
+        reader = reader.option("cloudFiles.useNotifications", "true")
+
+    raw = reader.load(paths.raw_yellow_path(config)).withColumn(
+        "_source_file", F.col("_metadata.file_path")
     )
     enriched = add_lineage_columns(raw)
 

@@ -4,7 +4,10 @@ from pathlib import Path
 
 from pyspark.sql import SparkSession
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_file = globals().get("__file__") or globals().get("filename") or (sys.argv[0] if sys.argv else None)
+_root = Path(_file).resolve().parents[2] if _file else Path.cwd()
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 from src.common import paths
 
 
@@ -12,11 +15,51 @@ def run_gold_sql_file(spark: SparkSession, sql_path: str, month: str) -> None:
     """design.md §12.5 -- runs one Gold mart's parameterized SQL for one
     month. :month substitution is a plain string replace here (Databricks SQL
     tasks handle real parameter binding; this is the local/portable runner)."""
-    sql_text = Path(sql_path).read_text().replace(":month", f"'{month}'")
+    p = Path(sql_path)
+    if not p.is_absolute() and not p.exists():
+        p = _root / sql_path
+    sql_text = p.read_text().replace(":month", f"'{month}'")
     for statement in sql_text.split(";"):
         statement = statement.strip()
         if statement:
             spark.sql(statement)
+
+
+GOLD_DDLS = [
+    """
+    CREATE TABLE IF NOT EXISTS taxi_lakehouse.gold.revenue_by_zone_hour (
+      pickup_date DATE,
+      pickup_hour INT,
+      pickup_location_id INT,
+      pickup_borough STRING,
+      pickup_zone STRING,
+      trip_count BIGINT,
+      total_revenue DECIMAL(12,2),
+      avg_fare_amount DECIMAL(10,2),
+      avg_trip_distance_mi DOUBLE,
+      pickup_month DATE
+    ) USING DELTA PARTITIONED BY (pickup_month)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS taxi_lakehouse.gold.fare_integrity_daily (
+      pickup_date DATE,
+      is_flat_fare BOOLEAN,
+      trip_count BIGINT,
+      avg_fare_per_mile DOUBLE,
+      fare_per_mile_p95 DOUBLE,
+      pickup_month DATE
+    ) USING DELTA PARTITIONED BY (pickup_month)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS taxi_lakehouse.gold.payment_mix_monthly (
+      payment_type_name STRING,
+      trip_count BIGINT,
+      pct_of_month_trips DOUBLE,
+      avg_tip_pct DOUBLE,
+      pickup_month DATE
+    ) USING DELTA PARTITIONED BY (pickup_month)
+    """,
+]
 
 
 if __name__ == "__main__":
@@ -30,12 +73,30 @@ if __name__ == "__main__":
     spark = SparkSession.builder.getOrCreate()
 
     try:
-        try:
-            import dbutils  # type: ignore
+        for ddl in GOLD_DDLS:
+            spark.sql(ddl)
 
-            months = dbutils.jobs.taskValues.get(taskKey="transform_silver", key="touched_months")
-        except ImportError:
+        try:
+            from pyspark.dbutils import DBUtils  # type: ignore
+
+            dbutils = DBUtils(spark)
+            months = dbutils.jobs.taskValues.get(
+                taskKey="transform_silver", key="touched_months"
+            )
+        except Exception:
             months = []
+
+        clean_tbl = paths.catalog_table("silver", "trips_clean")
+        if spark.catalog.tableExists(clean_tbl):
+            month_counts = {
+                str(r.pickup_month)[:10]: r["count"]
+                for r in spark.table(clean_tbl).groupBy("pickup_month").count().collect()
+                if r.pickup_month
+            }
+            if not months:
+                months = [m for m, cnt in month_counts.items() if cnt >= 100]
+            else:
+                months = [m for m in months if month_counts.get(m, 0) >= 100]
 
         for m in months:
             for sql_file in (

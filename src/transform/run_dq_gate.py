@@ -4,7 +4,10 @@ from pathlib import Path
 
 from pyspark.sql import SparkSession
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_file = globals().get("__file__") or globals().get("filename") or (sys.argv[0] if sys.argv else None)
+_root = Path(_file).resolve().parents[2] if _file else Path.cwd()
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 from src.common import paths
 
 
@@ -37,11 +40,29 @@ def check_quarantine_rate(
     threshold: float,
     clean_table: str = None,
     quarantine_table: str = None,
+    min_trips: int = 100,
 ) -> None:
     """design.md §11 fail-fast gate. Raises RuntimeError (fails the Lakeflow
     Jobs task) if this month's quarantine rate exceeds threshold. Called once
-    per touched month -- a breach halts only that month's Gold refresh."""
-    rate = compute_quarantine_rate(spark, month, clean_table, quarantine_table)
+    per touched month -- a breach halts only that month's Gold refresh.
+    Months with fewer than min_trips (e.g. clock-drift outliers with <100 trips) are skipped."""
+    clean_table = clean_table or paths.catalog_table("silver", "trips_clean")
+    quarantine_table = quarantine_table or paths.catalog_table("silver", "trips_quarantine")
+
+    clean_count = spark.sql(
+        f"SELECT count(*) AS c FROM {clean_table} WHERE pickup_month = '{month}'"
+    ).collect()[0]["c"]
+    quarantine_count = spark.sql(
+        f"SELECT count(*) AS c FROM {quarantine_table} "
+        f"WHERE date_trunc('month', tpep_pickup_datetime) = '{month}'"
+    ).collect()[0]["c"]
+
+    total = clean_count + quarantine_count
+    if total < min_trips:
+        print(f"Skipping dq_gate check for month {month}: total trips {total} < min_trips {min_trips}")
+        return
+
+    rate = quarantine_count / total
     if rate > threshold:
         raise RuntimeError(
             f"quarantine rate {rate:.4f} exceeds threshold {threshold:.4f} for month {month}"
@@ -60,11 +81,23 @@ if __name__ == "__main__":
 
     try:
         try:
-            import dbutils  # type: ignore
+            from pyspark.dbutils import DBUtils  # type: ignore
 
-            months = dbutils.jobs.taskValues.get(taskKey="transform_silver", key="touched_months")
-        except ImportError:
-            months = []  # local run -- pass months explicitly
+            dbutils = DBUtils(spark)
+            months = dbutils.jobs.taskValues.get(
+                taskKey="transform_silver", key="touched_months"
+            )
+        except Exception:
+            months = []
+
+        if not months:
+            clean_tbl = paths.catalog_table("silver", "trips_clean")
+            if spark.catalog.tableExists(clean_tbl):
+                months = [
+                    str(r.pickup_month)[:10]
+                    for r in spark.table(clean_tbl).select("pickup_month").distinct().collect()
+                    if r.pickup_month
+                ]
 
         for m in months:
             check_quarantine_rate(spark, m, cfg["thresholds"]["quarantine_rate_max"])

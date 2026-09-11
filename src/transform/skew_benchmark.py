@@ -5,7 +5,10 @@ from pathlib import Path
 
 from pyspark.sql import SparkSession, functions as F
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_file = globals().get("__file__") or globals().get("filename") or (sys.argv[0] if sys.argv else None)
+_root = Path(_file).resolve().parents[2] if _file else Path.cwd()
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 from src.common import paths
 
 SALT_BUCKETS = 8
