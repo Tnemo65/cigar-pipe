@@ -25,6 +25,21 @@ def runtime_config(argv=None):
     parser.add_argument("--zone-csv", default="")
     parser.add_argument("--source-uri", action="append", default=[], metavar="MONTH=URI")
     args = parser.parse_args(argv)
+    for name in (
+        "environment",
+        "catalog",
+        "bucket",
+        "project",
+        "dataset",
+        "pipeline_run_id",
+        "start_month",
+        "end_month",
+        "processing_date",
+        "zone_csv",
+    ):
+        value = getattr(args, name)
+        setattr(args, name, value.strip() if isinstance(value, str) else value)
+    args.source_uri = [value.strip() for value in args.source_uri]
     if args.environment not in ("dev", "staging", "prod"):
         raise ValueError("Unknown environment")
     for value in (args.catalog, args.dataset):
