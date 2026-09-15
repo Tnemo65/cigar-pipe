@@ -31,9 +31,9 @@ def load_dim_zone(spark: SparkSession, csv_path: str) -> DataFrame:
     )
 
 
-def run_seed_sql_file(spark: SparkSession, path: str) -> None:
+def run_seed_sql_file(spark: SparkSession, path: str, catalog: str = "taxi_lakehouse") -> None:
     with open(path) as f:
-        for statement in f.read().split(";"):
+        for statement in f.read().replace("taxi_lakehouse", paths.identifier(catalog)).split(";"):
             statement = statement.strip()
             if statement:
                 spark.sql(statement)
@@ -47,19 +47,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def seed_references(spark, cfg, zone_csv):
+    from src.common.reference import validate_dimension
+    zone = load_dim_zone(spark, zone_csv).withColumn("_loaded_at", F.current_timestamp())
+    validate_dimension(zone, "location_id", ("borough", "zone", "is_sentinel"))
+    zone.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(paths.catalog_table("reference", "dim_zone", cfg))
+    for table in ("dim_rate_code", "dim_payment_type"):
+        run_seed_sql_file(spark, str(Path(__file__).resolve().parents[1] / f"sql/reference/{table}.sql"), paths.catalog_name(cfg))
+        name = paths.catalog_table("reference", table, cfg)
+        if "_loaded_at" not in spark.table(name).columns:
+            spark.sql(f"ALTER TABLE {name} ADD COLUMNS (_loaded_at TIMESTAMP)")
+        spark.sql(f"UPDATE {name} SET _loaded_at = current_timestamp()")
+
+
 if __name__ == "__main__":
-    args = _parse_args()
-    cfg = paths.load_config(args.config)
+    from src.common.runtime import configure_spark, runtime_config
+    cfg = runtime_config()
     spark = SparkSession.builder.getOrCreate()
-
-    if not args.skip_zone:
-        zone_csv = args.zone_csv or f"{paths.raw_ref_path(cfg)}taxi_zone_lookup.csv"
-        dim_zone = load_dim_zone(spark, zone_csv)
-        dim_zone.write.format("delta").mode("overwrite").saveAsTable(
-            paths.catalog_table("reference", "dim_zone")
-        )
-        print("dim_zone loaded.")
-
-    run_seed_sql_file(spark, "sql/reference/dim_rate_code.sql")
-    run_seed_sql_file(spark, "sql/reference/dim_payment_type.sql")
-    print("reference.* loaded.")
+    configure_spark(spark)
+    seed_references(spark, cfg, cfg.get("zone_csv") or f"{paths.raw_ref_path(cfg)}taxi_zone_lookup.csv")

@@ -2,7 +2,11 @@ from unittest.mock import MagicMock, patch
 
 from scripts.download_tlc_data import download_month, download_zone_lookup
 
-CONFIG = {"gcp": {"bucket": "demo-proj-taxi-lake"}}
+CONFIG = {
+    "environment": "dev",
+    "databricks": {"catalog": "taxi_lakehouse_dev"},
+    "gcp": {"bucket": "demo-proj-taxi-lake-dev"},
+}
 
 
 @patch("scripts.download_tlc_data.requests.get")
@@ -18,9 +22,9 @@ def test_download_month_uploads_to_correct_path(mock_get):
     )
     uploader.assert_called_once_with(
         b"fake-parquet-bytes",
-        "gs://demo-proj-taxi-lake/raw/yellow/yellow_tripdata_2024-01.parquet",
+        "gs://demo-proj-taxi-lake-dev/dev/raw/yellow/yellow_tripdata_2024-01.parquet",
     )
-    assert result == "gs://demo-proj-taxi-lake/raw/yellow/yellow_tripdata_2024-01.parquet"
+    assert result == "gs://demo-proj-taxi-lake-dev/dev/raw/yellow/yellow_tripdata_2024-01.parquet"
 
 
 @patch("scripts.download_tlc_data.requests.get")
@@ -43,4 +47,4 @@ def test_download_zone_lookup(mock_get):
     mock_get.assert_called_once_with(
         "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv", timeout=30
     )
-    assert result == "gs://demo-proj-taxi-lake/raw/ref/taxi_zone_lookup.csv"
+    assert result == "gs://demo-proj-taxi-lake-dev/dev/raw/ref/taxi_zone_lookup.csv"

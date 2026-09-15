@@ -64,10 +64,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    args = _parse_args()
-    cfg = paths.load_config(args.config)
-    if not args.skip_zone:
-        download_zone_lookup(cfg)
-    for m in range(args.start_month, args.end_month + 1):
-        print(download_month(args.year, m, cfg))
-    print("Done.")
+    from pyspark.sql import SparkSession
+    from src.common.runtime import configure_spark, runtime_config
+    from src.ingestion.source_landing import run
+    cfg = runtime_config()
+    spark = SparkSession.builder.getOrCreate()
+    configure_spark(spark)
+    run(spark, cfg)

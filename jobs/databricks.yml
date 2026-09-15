@@ -1,117 +1,430 @@
-# jobs/databricks.yml
 bundle:
   name: nyc-taxi-lakehouse
-
 sync:
   paths:
-    - ../src
-    - ../sql
-    - ../configs
-    - ../scripts
-
+  - ../src
+  - ../sql
+  - ../configs
+  - ../scripts
 variables:
   catalog:
-    default: taxi_lakehouse
+    default: taxi_lakehouse_dev
   environment:
     default: dev
-  processing_date:
-    default: ""
+  bucket:
+    default: taxi-data-engineer-taxi-lake-dev
+  dataset:
+    default: taxi_analytics_dev
+  gcp_project:
+    default: taxi-data-engineer
   schedule_pause_status:
     default: PAUSED
-
+  run_as_service_principal:
+    description: Databricks application ID of the environment runtime principal
+  landing_service_account:
+    description: GCP service account for immutable source landing
+  processing_service_account:
+    description: GCP service account for Spark transformations
+  serving_service_account:
+    description: GCP service account scoped to the serving dataset
+  alert_email:
+    description: Operational owner for failures and freshness alerts
+  node_type:
+    default: n2-highmem-4
+  spark_version:
+    default: 15.4.x-scala2.12
 resources:
   jobs:
     taxi_pipeline:
-      name: taxi-pipeline
+      name: taxi-pipeline-${bundle.target}
       max_concurrent_runs: 1
-
+      queue:
+        enabled: true
+      run_as:
+        service_principal_name: ${var.run_as_service_principal}
+      parameters:
+      - name: start_month
+        default: ''
+      - name: end_month
+        default: ''
+      - name: processing_date
+        default: ''
+      - name: source_uri
+        default: ''
+      - name: allow_unpublished
+        default: 'true'
       environments:
-        - environment_key: default
-          spec:
-            client: "1"
-            dependencies:
-              - google-cloud-bigquery
-              - google-cloud-storage
-              - pyyaml
-
+      - environment_key: default
+        spec:
+          client: '4'
+          dependencies:
+          - google-cloud-bigquery==3.26.0
+          - google-cloud-storage==2.18.2
+          - pyyaml==6.0.2
+          - requests==2.32.5
+          - pyarrow==19.0.1
 
       schedule:
-        quartz_cron_expression: "0 0 6 * * ?"
-        timezone_id: "America/New_York"
-        pause_status: ${var.schedule_pause_status}
 
+
+        quartz_cron_expression: 0 0 6 * * ?
+        timezone_id: America/New_York
+        pause_status: ${var.schedule_pause_status}
       email_notifications:
         on_failure:
-          - tnemo65.ldt@gmail.com
-      notification_settings:
-        no_alert_for_skipped_runs: true
-
+        - ${var.alert_email}
       tasks:
+      - task_key: source_landing
+        environment_key: default
+        spark_python_task:
+
+          python_file: ../src/ingestion/source_landing.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
+          - --source-uri
+          - '{{job.parameters.source_uri}}'
+
+        max_retries: 2
+        min_retry_interval_millis: 60000
+        timeout_seconds: 900
+
+
+      - task_key: reference_preflight
+        environment_key: default
+        spark_python_task:
+          python_file: ../scripts/reference_preflight.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
+
+        max_retries: 1
+        min_retry_interval_millis: 60000
+        timeout_seconds: 600
+
+        depends_on:
+        - task_key: source_landing
+      - task_key: ingest_bronze
+        environment_key: default
+        spark_python_task:
+          python_file: ../src/ingestion/bronze_autoloader.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
+
+        max_retries: 2
+        min_retry_interval_millis: 60000
+        timeout_seconds: 1200
+
+        depends_on:
+        - task_key: reference_preflight
+      - task_key: transform_silver
+        environment_key: default
+        spark_python_task:
+          python_file: ../src/transform/silver_clean.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
+
+        max_retries: 2
+        min_retry_interval_millis: 60000
+        timeout_seconds: 1500
+
+        depends_on:
         - task_key: ingest_bronze
-          environment_key: default
-          spark_python_task:
-            python_file: ../src/ingestion/bronze_autoloader.py
-          max_retries: 2
-          timeout_seconds: 1800
+      - task_key: dq_gate
+        environment_key: default
+        spark_python_task:
+          python_file: ../src/transform/run_dq_gate.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
 
+        max_retries: 0
+        min_retry_interval_millis: 60000
+        timeout_seconds: 600
+
+        depends_on:
         - task_key: transform_silver
-          depends_on:
-            - task_key: ingest_bronze
-          environment_key: default
-          spark_python_task:
-            python_file: ../src/transform/silver_clean.py
-          max_retries: 2
-          timeout_seconds: 1800
+      - task_key: aggregate_gold
+        environment_key: default
+        spark_python_task:
+          python_file: ../src/transform/run_gold_sql.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
 
+        max_retries: 2
+        min_retry_interval_millis: 60000
+        timeout_seconds: 1200
+
+        depends_on:
         - task_key: dq_gate
-          depends_on:
-            - task_key: transform_silver
-          environment_key: default
-          spark_python_task:
-            python_file: ../src/transform/run_dq_gate.py
-          max_retries: 0
-          timeout_seconds: 1800
+      - task_key: export_bigquery
+        environment_key: default
+        spark_python_task:
+          python_file: ../src/export/export_bigquery.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
 
+        max_retries: 1
+        min_retry_interval_millis: 60000
+        timeout_seconds: 1200
+
+        depends_on:
         - task_key: aggregate_gold
-          depends_on:
-            - task_key: dq_gate
-          environment_key: default
-          spark_python_task:
-            python_file: ../src/transform/run_gold_sql.py
-          max_retries: 2
-          timeout_seconds: 1800
+      - task_key: monitor
+        environment_key: default
+        spark_python_task:
+          python_file: ../scripts/monitor_pipeline.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
 
+        max_retries: 0
+        min_retry_interval_millis: 60000
+        timeout_seconds: 300
+
+        depends_on:
         - task_key: export_bigquery
-          depends_on:
-            - task_key: aggregate_gold
-          environment_key: default
-          spark_python_task:
-            python_file: ../src/export/export_bigquery.py
-          max_retries: 2
-          timeout_seconds: 1800
+    taxi_watchdog:
+      name: taxi-watchdog-${bundle.target}
+      max_concurrent_runs: 1
+      run_as:
+        service_principal_name: ${var.run_as_service_principal}
+      parameters:
+      - name: start_month
+        default: ''
+      - name: end_month
+        default: ''
+      - name: processing_date
+        default: ''
+      - name: allow_unpublished
+        default: 'true'
+      environments:
+      - environment_key: default
+        spec:
+          client: '4'
+          dependencies:
+          - google-cloud-bigquery==3.26.0
+          - google-cloud-storage==2.18.2
+          - pyyaml==6.0.2
+          - requests==2.32.5
+          - pyarrow==19.0.1
+
+      schedule:
+
+        quartz_cron_expression: 0 0 * * * ?
+        timezone_id: UTC
+        pause_status: ${var.schedule_pause_status}
+      email_notifications:
+        on_failure:
+        - ${var.alert_email}
+      tasks:
+      - task_key: check_freshness
+        environment_key: default
+        spark_python_task:
+          python_file: ../scripts/watchdog.py
+          parameters:
+          - --environment
+          - ${var.environment}
+          - --catalog
+          - ${var.catalog}
+          - --bucket
+          - ${var.bucket}
+          - --project
+          - ${var.gcp_project}
+          - --dataset
+          - ${var.dataset}
+          - --pipeline-run-id
+          - '{{job.run_id}}'
+          - --start-month
+          - '{{job.parameters.start_month}}'
+          - --end-month
+          - '{{job.parameters.end_month}}'
+          - --processing-date
+          - '{{job.parameters.processing_date}}'
+          - --allow-unpublished
+          - '{{job.parameters.allow_unpublished}}'
+
+        max_retries: 0
+        min_retry_interval_millis: 60000
+        timeout_seconds: 1800
 
 targets:
   dev:
-    default: true
     variables:
-      catalog: taxi_lakehouse
       environment: dev
-      processing_date: ""
+      catalog: taxi_lakehouse_dev
+      bucket: taxi-data-engineer-taxi-lake-dev
+      dataset: taxi_analytics_dev
       schedule_pause_status: PAUSED
-
-  staging:
-    variables:
-      catalog: taxi_lakehouse_staging
-      environment: staging
-      processing_date: ""
-      schedule_pause_status: PAUSED
-
-  prod:
-    mode: production
     workspace:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    default: true
+  staging:
     variables:
-      catalog: taxi_lakehouse
+      environment: staging
+      catalog: taxi_lakehouse_staging
+      bucket: taxi-data-engineer-taxi-lake-staging
+      dataset: taxi_analytics_staging
+      schedule_pause_status: PAUSED
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+  prod:
+    variables:
       environment: prod
-      processing_date: ""
-      schedule_pause_status: UNPAUSED
+      catalog: taxi_lakehouse_prod
+      bucket: taxi-data-engineer-taxi-lake-prod
+      dataset: taxi_analytics_prod
+      # Keep production paused until explicit go-live approval and schedule activation.
+      schedule_pause_status: PAUSED
+
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    mode: production
