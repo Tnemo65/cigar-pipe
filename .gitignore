@@ -23,3 +23,6 @@ infra/.terraform/
 *.tfstate.*
 *.tfvars
 *.tfplan
+docs/
+AGENTS.md
+implementation.md
