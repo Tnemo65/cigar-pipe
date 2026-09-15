@@ -1,48 +1,15 @@
 # NYC Taxi Lakehouse
 
-GCS → Bronze Delta (Auto Loader) → Silver (PySpark MERGE dedup) → Gold (SQL INSERT OVERWRITE) → GCS Parquet partitions → BigLake external tables → BigQuery
+TLC monthly Parquet → immutable GCS snapshots → Auto Loader Bronze → validated Delta Silver → snapshot DQ → Gold → atomic native BigQuery publication.
 
-## Architecture
+- [Implementation and deployment contract](docs/implementation.md)
+- [Operations and test commands](docs/operations.md)
+- [P0/P1 validation and remaining acceptance work](docs/p0-p1-validation.md)
 
-```
-GCS raw Parquet
-      │
-      ▼
-Bronze (Delta, append-only, Auto Loader)
-      │
-      ▼
-Silver (Delta, deduplicated via MERGE on trip_id SHA-256)
-      │
-      ▼
-Gold marts (INSERT OVERWRITE by partition month)
-      │
-      ▼
-GCS Parquet (one Hive partition per touched month)
-      │
-      ▼
-BigLake external tables → BigQuery
+```sh
+uv sync --locked --group dev
+uv run pytest -q
+uv run python scripts/validate_bundle.py
 ```
 
-## Setup
-
-```bash
-uv sync --group dev
-```
-
-## Run tests
-
-```bash
-uv run pytest tests/
-```
-
-## Operations
-
-See `docs/operations.md` for delivery semantics, replay invariants, daily operation,
-scale-test tiers, CI/CD promotion, and recovery requirements.
-
-## Deploy pipeline
-
-```bash
-databricks bundle deploy
-databricks bundle run taxi_pipeline
-```
+Java 17 is required for Spark tests. Databricks CLI is required for offline bundle-schema checks. Local tests do not certify cloud IAM, deployed staging or production-scale performance; consult the validation report for evidence.

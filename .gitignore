@@ -12,6 +12,14 @@ derby.log
 metastore_db/
 .claude/
 interview/
-docs/
-implementation.md
 .kilo/
+
+artifacts/
+
+artifacts-*.log
+artifacts-*.json
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
