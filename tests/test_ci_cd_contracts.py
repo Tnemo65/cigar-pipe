@@ -18,6 +18,8 @@ def test_cd_uses_run_id_from_bundle_output_and_reconciliation():
     assert "Resolve deployed staging job ID" in workflow
     assert "databricks jobs list --output json" in workflow
     assert "databricks jobs list-runs --job-id" in workflow
+    assert "creator_user_name" in workflow
+    assert "deployment" in workflow
     assert "first-run-id.txt" in workflow
     assert "replay-run-id.txt" in workflow
     assert "bundle run -o json" not in workflow

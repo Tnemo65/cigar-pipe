@@ -61,7 +61,7 @@ jobs:
         run: |
           mkdir -p ../artifacts
           databricks jobs list --output json > ../artifacts/jobs.json
-          python -c 'import json; jobs=json.load(open("../artifacts/jobs.json")); matches=[j for j in jobs if j.get("settings",{}).get("name")=="taxi-pipeline-staging"]; assert len(matches)==1, f"expected one staging job, found {len(matches)}"; print(matches[0]["job_id"])' > ../artifacts/staging-job-id.txt
+          python -c 'import json,os; jobs=json.load(open("../artifacts/jobs.json")); expected=os.environ["BUNDLE_VAR_run_as_service_principal"]; matches=[j for j in jobs if j.get("settings",{}).get("name")=="taxi-pipeline-staging" and j.get("creator_user_name")==expected and j.get("settings",{}).get("deployment",{}).get("kind")=="BUNDLE"]; assert len(matches)==1, f"expected one Bundle-managed staging job for {expected}, found {len(matches)}"; print(matches[0]["job_id"])' > ../artifacts/staging-job-id.txt
           echo "STAGING_JOB_ID=$(cat ../artifacts/staging-job-id.txt)" >> "$GITHUB_ENV"
 
       - name: Real source to serving smoke and replay
