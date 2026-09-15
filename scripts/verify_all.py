@@ -1,32 +1,15 @@
-"""Comprehensive End-to-End Verification Report Script.
-Queries BigQuery and Databricks SQL Warehouse to print verified numbers for presentation.
-"""
+"""Read-only reconciliation for a specific completed pipeline run."""
+import argparse
+import json
 import sys
+from decimal import Decimal
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-import yaml
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from google.cloud import bigquery
-
+from scripts.cloud_integration import cli
 from scripts.databricks_sql import execute_statement
-
-CONFIG_PATH = ROOT / "configs" / "config.yaml"
-PROJECT_ID = "taxi-data-engineer"
-DATASET_ID = "taxi_analytics"
-WAREHOUSE_ID = "d97366f8e702f01e"
-
-
-def load_config() -> dict:
-    with CONFIG_PATH.open(encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
-
-
-def query_databricks(stmt: str):
-    response = execute_statement(stmt, WAREHOUSE_ID)
-    return response.get("result", {}).get("data_array", [])
+from src.common.runtime import runtime_config, month_start
+from src.common import paths
 
 
 def assert_quarantine_rate(raw_count: int, quarantine_count: int, threshold: float) -> float:
@@ -39,92 +22,51 @@ def assert_quarantine_rate(raw_count: int, quarantine_count: int, threshold: flo
         )
     return rate
 
-def main() -> None:
-    print("================================================================")
-    print("          NYC TAXI LAKEHOUSE PRODUCTION VERIFICATION REPORT      ")
-    print("================================================================\n")
 
-    config = load_config()
-    threshold = float(config["thresholds"]["quarantine_rate_max"])
-
-    print("--- 1. DATABRICKS DELTA LAKEHOUSE ROW COUNTS ---")
-    db_tables = [
-        "taxi_lakehouse.bronze.trips_raw",
-        "taxi_lakehouse.silver.trips_clean",
-        "taxi_lakehouse.silver.trips_quarantine",
-        "taxi_lakehouse.gold.revenue_by_zone_hour",
-        "taxi_lakehouse.gold.fare_integrity_daily",
-        "taxi_lakehouse.gold.payment_mix_monthly",
-        "taxi_lakehouse.reference.dim_zone",
-        "taxi_lakehouse.reference.dim_rate_code",
-        "taxi_lakehouse.reference.dim_payment_type",
-    ]
-    for table in db_tables:
-        count = query_databricks(f"SELECT count(*) FROM {table}")
-        print(f"  {table:<45}: {int(count[0][0]):>10,d} rows")
-
-    print("\n--- 2. GOOGLE BIGQUERY EXTERNAL (BIGLAKE) TABLES ---")
-    client = bigquery.Client(project=PROJECT_ID)
-    revenue_result = list(client.query(
-        f"SELECT count(*) AS cnt, sum(trip_count) AS trips, "
-        f"round(sum(total_revenue), 2) AS rev FROM "
-        f"`{PROJECT_ID}.{DATASET_ID}.revenue_by_zone_hour`"
-    ).result())[0]
-    print(
-        f"  revenue_by_zone_hour : {revenue_result.cnt:>8,d} rows | "
-        f"{revenue_result.trips:>10,d} trips | ${revenue_result.rev:>14,f} total revenue"
+def main():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--profile", default="")
+    parser.add_argument("--warehouse-id",required=True)
+    args,remaining = parser.parse_known_args()
+    cfg = runtime_config(remaining)
+    def request(payload):
+        profile_args = ["--profile", args.profile] if args.profile else []
+        if "statement_id" in payload:
+            return cli("api", "get", "/api/2.0/sql/statements/" + payload["statement_id"], *profile_args)
+        return cli("api", "post", "/api/2.0/sql/statements", "--json", json.dumps(payload), *profile_args)
+    def query(sql):
+        response = execute_statement(sql,args.warehouse_id,run_cli=request)
+        return response.get("result",{}).get("data_array",[])
+    state_table = paths.catalog_table("reference","pipeline_run_state",cfg)
+    state = query(
+        f"SELECT status,payload FROM {state_table} "
+        f"WHERE pipeline_run_id='{cfg['pipeline_run_id']}' AND task_name='monitor'"
     )
+    if len(state)!=1 or state[0][0] not in ("SUCCESS","NO_DATA"):
+        raise RuntimeError("Run has no successful monitoring state")
+    payload=json.loads(state[0][1])
+    if state[0][0]=="NO_DATA":
+        print(json.dumps({"status":"NO_DATA","pipeline_run_id":cfg['pipeline_run_id']}))
+        return
+    project,dataset=cfg['gcp']['project_id'],cfg['bigquery']['dataset']
+    client=bigquery.Client(project=project)
+    receipt=list(client.query(f"SELECT pipeline_run_id FROM `{project}.{dataset}.publication_runs` WHERE pipeline_run_id=@run_id",
+        job_config=bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter('run_id','STRING',cfg['pipeline_run_id'])])).result())
+    if len(receipt)!=1:
+        raise RuntimeError("Missing/duplicate atomic publication receipt")
+    for metric in payload['gold_metrics']:
+        month=month_start(metric['month']); mart=paths.identifier(metric['mart'])
+        sql=f"SELECT COUNT(*) AS rows, COALESCE(SUM(trip_count),0) AS trips FROM `{project}.{dataset}.{mart}` WHERE pickup_month=DATE '{month}'"
+        actual=list(client.query(sql).result())[0]
+        if actual.rows!=metric['rows'] or actual.trips!=metric['trips']:
+            raise RuntimeError(f"Serving reconciliation failed: {mart}/{month}")
+        if mart=='revenue_by_zone_hour':
+            source=query(f"SELECT COALESCE(SUM(total_revenue),0) FROM {paths.catalog_table('gold',mart,cfg)} WHERE pickup_month=DATE '{month}'")[0][0]
+            actual=list(client.query(f"SELECT COALESCE(SUM(total_revenue),0) AS revenue FROM `{project}.{dataset}.{mart}` WHERE pickup_month=DATE '{month}'").result())[0].revenue
+            if Decimal(str(source))!=Decimal(str(actual)):
+                raise RuntimeError(f"Revenue mismatch: {month}")
+    print(json.dumps({"status":"SUCCESS","pipeline_run_id":cfg['pipeline_run_id'],"months":payload['months']}))
 
-    fare_result = list(client.query(
-        f"SELECT count(*) AS cnt, sum(trip_count) AS trips, "
-        f"round(avg(avg_fare_per_mile), 2) AS fpm FROM "
-        f"`{PROJECT_ID}.{DATASET_ID}.fare_integrity_daily`"
-    ).result())[0]
-    print(
-        f"  fare_integrity_daily : {fare_result.cnt:>8,d} rows | "
-        f"{fare_result.trips:>10,d} trips | ${fare_result.fpm:>6.2f}/mile avg fare"
-    )
-
-    payment_results = list(client.query(
-        f"SELECT payment_type_name, trip_count, "
-        f"round(pct_of_month_trips * 100, 2) AS pct, "
-        f"round(avg_tip_pct * 100, 2) AS tip FROM "
-        f"`{PROJECT_ID}.{DATASET_ID}.payment_mix_monthly` "
-        "ORDER BY trip_count DESC"
-    ).result())
-    print(f"  payment_mix_monthly  : {len(payment_results):>8,d} categories:")
-    for row in payment_results:
-        tip = f"{row.tip:>5.1f}%" if row.tip is not None else " N/A "
-        print(
-            f"    - {row.payment_type_name:<15}: {row.trip_count:>10,d} trips "
-            f"({row.pct:>5.2f}%) | Avg Tip: {tip}"
-        )
-
-    print("\n--- 3. DATA QUALITY GOVERNANCE ---")
-    raw_count = int(query_databricks(
-        "SELECT count(*) FROM taxi_lakehouse.bronze.trips_raw"
-    )[0][0])
-    clean_count = int(query_databricks(
-        "SELECT count(*) FROM taxi_lakehouse.silver.trips_clean"
-    )[0][0])
-    quarantine_count = int(query_databricks(
-        "SELECT count(*) FROM taxi_lakehouse.silver.trips_quarantine"
-    )[0][0])
-    if clean_count + quarantine_count > raw_count:
-        raise AssertionError(
-            "Silver clean plus quarantine exceeds Bronze; duplicate or retry data detected"
-        )
-    deduplicated_rows = raw_count - clean_count - quarantine_count
-    rate = assert_quarantine_rate(raw_count, quarantine_count, threshold)
-    print(f"  Total Ingested   : {raw_count:>10,d}")
-    print(f"  Valid (Clean)    : {clean_count:>10,d} ({clean_count/raw_count*100:>5.2f}%)")
-    print(f"  Quarantined      : {quarantine_count:>10,d} ({rate*100:>5.2f}%)")
-    print(f"  Deduplicated     : {deduplicated_rows:>10,d} Bronze rows not re-emitted")
-    print(f"  Threshold Status : PASS ({rate*100:.2f}% <= {threshold*100:.2f}%)")
-
-    print("\n================================================================")
-    print("                    ALL CHECKS PASSED                         ")
-    print("================================================================\n")
 
 if __name__ == "__main__":
     main()

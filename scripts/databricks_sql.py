@@ -27,7 +27,11 @@ def _run_cli(args: list[str]) -> dict[str, Any]:
         ) from error
 
 
-def _submit_statement(payload: dict[str, Any]) -> dict[str, Any]:
+def _profile_args(profile: str | None) -> list[str]:
+    return ["--profile", profile] if profile else []
+
+
+def _submit_statement(payload: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
     return _run_cli(
         [
             "databricks",
@@ -36,17 +40,19 @@ def _submit_statement(payload: dict[str, Any]) -> dict[str, Any]:
             "/api/2.0/sql/statements",
             "--json",
             json.dumps(payload),
+            *_profile_args(profile),
         ]
     )
 
 
-def _get_statement(statement_id: str) -> dict[str, Any]:
+def _get_statement(statement_id: str, profile: str | None = None) -> dict[str, Any]:
     return _run_cli(
         [
             "databricks",
             "api",
             "get",
             f"/api/2.0/sql/statements/{statement_id}",
+            *_profile_args(profile),
         ]
     )
 
