@@ -1,0 +1,115 @@
+name: Controlled promotion
+on:
+  workflow_run:
+    workflows: [CI Pipeline]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+concurrency:
+  group: lakehouse-promotion
+  cancel-in-progress: false
+jobs:
+  staging:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      BUNDLE_VAR_run_as_service_principal: ${{ vars.RUNTIME_PRINCIPAL_ID }}
+      BUNDLE_VAR_landing_service_account: ${{ vars.LANDING_SERVICE_ACCOUNT }}
+      BUNDLE_VAR_processing_service_account: ${{ vars.PROCESSING_SERVICE_ACCOUNT }}
+      BUNDLE_VAR_serving_service_account: ${{ vars.SERVING_SERVICE_ACCOUNT }}
+      BUNDLE_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+      BUNDLE_VAR_gcp_project: ${{ vars.GCP_PROJECT_ID }}
+      BUNDLE_VAR_bucket: ${{ vars.GCS_BUCKET }}
+      BUNDLE_VAR_catalog: ${{ vars.UC_CATALOG }}
+      BUNDLE_VAR_dataset: ${{ vars.BQ_DATASET }}
+      GOOGLE_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+      GOOGLE_SERVICE_ACCOUNT: ${{ vars.VERIFICATION_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: databricks/setup-cli@v1.9.0
+        with:
+          version: 1.15.0
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.9.18"
+          enable-cache: true
+      - name: Install verification dependencies
+        run: uv sync --locked --group dev
+
+      - name: Validate and deploy staging
+        working-directory: jobs
+        run: |
+          databricks bundle validate -t staging
+          databricks bundle deploy -t staging
+      - name: Authenticate verification identity for BigQuery
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GOOGLE_SERVICE_ACCOUNT }}
+
+      - name: Real source to serving smoke and replay
+        working-directory: jobs
+        env:
+          START_MONTH: ${{ vars.SMOKE_START_MONTH }}
+          END_MONTH: ${{ vars.SMOKE_END_MONTH }}
+          SOURCE_URI_MAP: ${{ vars.SOURCE_URI_MAP }}
+        run: |
+          test -n "$START_MONTH" && test -n "$END_MONTH"
+          test -n "$SOURCE_URI_MAP"
+          test -n "$DATABRICKS_HOST" && test -n "$DATABRICKS_CLIENT_ID"
+          test -n "$BUNDLE_VAR_catalog" && test -n "$BUNDLE_VAR_bucket"
+          mkdir -p ../artifacts
+          databricks bundle run -o json -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false" > ../artifacts/first-run.json
+          python -c 'import json; print(json.load(open("../artifacts/first-run.json"))["run_id"])' > ../artifacts/first-run-id.txt
+          databricks bundle run -o json -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false" > ../artifacts/replay-run.json
+          python -c 'import json; print(json.load(open("../artifacts/replay-run.json"))["run_id"])' > ../artifacts/replay-run-id.txt
+          echo "JOB_RUN_ID=$(cat ../artifacts/first-run-id.txt)" >> "$GITHUB_ENV"
+
+      - name: Fetch serving handoff
+        env:
+          WAREHOUSE_ID: ${{ vars.DATABRICKS_WAREHOUSE_ID }}
+          JOB_RUN_ID: ${{ env.JOB_RUN_ID }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_AUTH_TYPE: github-oidc
+        run: |
+          test -n "$WAREHOUSE_ID"
+          test -n "$JOB_RUN_ID"
+          uv run python scripts/fetch_serving_handoff.py \
+            --profile "" \
+            --warehouse-id "$WAREHOUSE_ID" \
+            --run-id "$JOB_RUN_ID" \
+            --output artifacts/serving-handoff.json
+
+      - name: Publish native BigQuery serving
+        run: |
+          uv run python scripts/publish_bigquery.py \
+            --handoff artifacts/serving-handoff.json \
+            --environment staging \
+            --confirm-cost > artifacts/publication.json
+
+      - name: Reconcile the completed staging run
+        run: |
+          uv run python scripts/reconcile_bigquery.py \
+            --handoff artifacts/serving-handoff.json \
+            --output artifacts/bigquery-reconciliation.json
+
+      - name: Upload staging verification evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staging-evidence-${{ github.run_id }}
+          path: |
+            artifacts/
+            /tmp/prod-environment.json
+          if-no-files-found: warn
+

@@ -31,35 +31,50 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
-          version: "latest"
+          version: "0.9.18"
           enable-cache: true
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --locked --group dev
+
+      - name: Install Databricks CLI for offline schema validation
+        uses: databricks/setup-cli@v1.9.0
+        with:
+          version: 1.15.0
+
+      - name: Validate all target schemas without credentials
+        run: uv run python scripts/validate_bundle.py
 
       - name: Compile Python sources
         run: uv run python -m compileall -q src scripts tests
 
       - name: Run Pytest suite
-        run: uv run pytest tests/ -v
+        run: |
+          mkdir -p artifacts
+          uv run pytest tests/ -v --junitxml=artifacts/pytest.xml
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-evidence-${{ github.run_id }}
+          path: artifacts/pytest.xml
 
       - name: Check working tree whitespace
         run: git diff --check
 
-  validate-bundle:
-    name: Databricks Asset Bundle Validation
+  validate-infrastructure:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Databricks CLI
-        uses: databricks/setup-cli@v0.262.0
-
-      - name: Validate Databricks bundle syntax
-        working-directory: jobs
-        run: databricks bundle validate -t dev
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - working-directory: infra
+        run: |
+          terraform fmt -check
+          terraform init -backend=false
+          terraform validate

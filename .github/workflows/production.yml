@@ -1,0 +1,61 @@
+name: Manual production deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type I_UNDERSTAND_PRODUCTION_DEPLOY to continue
+        required: true
+        type: string
+      ref:
+        description: Git ref to deploy (must be main)
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: lakehouse-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-production:
+    if: github.ref == 'refs/heads/main' && inputs.confirmation == 'I_UNDERSTAND_PRODUCTION_DEPLOY'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      BUNDLE_VAR_run_as_service_principal: ${{ vars.RUNTIME_PRINCIPAL_ID }}
+      BUNDLE_VAR_landing_service_account: ${{ vars.LANDING_SERVICE_ACCOUNT }}
+      BUNDLE_VAR_processing_service_account: ${{ vars.PROCESSING_SERVICE_ACCOUNT }}
+      BUNDLE_VAR_serving_service_account: ${{ vars.SERVING_SERVICE_ACCOUNT }}
+      BUNDLE_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+      BUNDLE_VAR_gcp_project: ${{ vars.GCP_PROJECT_ID }}
+      BUNDLE_VAR_bucket: ${{ vars.GCS_BUCKET }}
+      BUNDLE_VAR_catalog: ${{ vars.UC_CATALOG }}
+      BUNDLE_VAR_dataset: ${{ vars.BQ_DATASET }}
+      BUNDLE_VAR_schedule_pause_status: PAUSED
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: databricks/setup-cli@v1.9.0
+        with:
+          version: 1.15.0
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.9.18"
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+      - name: Validate production bundle
+        working-directory: jobs
+        run: databricks bundle validate -t prod
+      - name: Deploy production bundle with schedule paused
+        working-directory: jobs
+        run: databricks bundle deploy -t prod
