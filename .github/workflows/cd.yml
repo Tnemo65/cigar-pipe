@@ -69,9 +69,9 @@ jobs:
           test -n "$BUNDLE_VAR_catalog" && test -n "$BUNDLE_VAR_bucket"
           mkdir -p ../artifacts
           databricks bundle run -o json -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false" > ../artifacts/first-run.json
-          uv run python -c "from src.common.databricks_run import extract_run_id; from pathlib import Path; print(extract_run_id(Path('../artifacts/first-run.json').read_text()))" > ../artifacts/first-run-id.txt
+          uv run python -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd().parent)); from src.common.databricks_run import extract_run_id; print(extract_run_id(Path('../artifacts/first-run.json').read_text()))" > ../artifacts/first-run-id.txt
           databricks bundle run -o json -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false" > ../artifacts/replay-run.json
-          uv run python -c "from src.common.databricks_run import extract_run_id; from pathlib import Path; print(extract_run_id(Path('../artifacts/replay-run.json').read_text()))" > ../artifacts/replay-run-id.txt
+          uv run python -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd().parent)); from src.common.databricks_run import extract_run_id; print(extract_run_id(Path('../artifacts/replay-run.json').read_text()))" > ../artifacts/replay-run-id.txt
           echo "JOB_RUN_ID=$(cat ../artifacts/first-run-id.txt)" >> "$GITHUB_ENV"
 
       - name: Fetch serving handoff
