@@ -1,23 +1,40 @@
 # configs/config.yaml
+environment: "dev"
+
 gcp:
   project_id: "taxi-data-engineer"
   region: "us-central1"
-  bucket: "taxi-data-engineer-taxi-lake"
+  bucket: "taxi-data-engineer-taxi-lake-dev"
 
 databricks:
-  catalog: "taxi_lakehouse"
+  catalog: "taxi_lakehouse_dev"
   use_notifications: false
   source_mode: "available_now"
 
 ingestion:
   late_arrival_months: 2
+  publication_lag_months: 2
   require_immutable_raw_objects: true
   api_simulation_enabled: false
   allow_full_history_fallback: false
 
 bigquery:
-  dataset: "taxi_analytics"
+  dataset: "taxi_analytics_dev"
 
 thresholds:
   quarantine_rate_max: 0.10   # design.md §11 fail-fast gate (covers ~8.9% observed TLC raw quarantine rate)
 
+
+reference:
+  max_age_days: 90
+monitoring:
+  max_no_data_runs: 2
+  max_source_age_days: 100
+  min_snapshot_rows: 100
+  alert_dedup_window_minutes: 1440
+  expected_daily_run_hour_utc: 6
+cost:
+  benchmark_max_runs: 6
+  benchmark_max_duration_minutes: 180
+  staging_artifact_retention_days: 2
+  production_artifact_retention_days: 7

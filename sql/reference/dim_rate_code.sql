@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS taxi_lakehouse.reference.dim_rate_code (
 
 TRUNCATE TABLE taxi_lakehouse.reference.dim_rate_code;
 
-INSERT INTO taxi_lakehouse.reference.dim_rate_code VALUES
+INSERT INTO taxi_lakehouse.reference.dim_rate_code (rate_code_id, rate_code_name, is_flat_fare) VALUES
   (1, 'Standard',              false),
   (2, 'JFK',                   true),
   (3, 'Newark',                true),

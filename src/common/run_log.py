@@ -36,18 +36,8 @@ def log_run(
             started_at,
             ended_at,
         )],
-        [
-            "pipeline_run_id",
-            "task_name",
-            "batch_id",
-            "source_snapshot_id",
-            "rows_in",
-            "rows_out",
-            "rows_deduplicated",
-            "rows_quarantined",
-            "status",
-            "started_at",
-            "ended_at",
-        ],
+        "pipeline_run_id STRING, task_name STRING, batch_id STRING, source_snapshot_id STRING, "
+        "rows_in BIGINT, rows_out BIGINT, rows_deduplicated BIGINT, rows_quarantined BIGINT, "
+        "status STRING, started_at TIMESTAMP, ended_at TIMESTAMP",
     )
     row.write.format("delta").mode("append").saveAsTable(table_name)

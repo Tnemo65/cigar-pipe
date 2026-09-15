@@ -6,6 +6,7 @@ from pyspark.sql.types import (
     StructField,
     StructType,
     TimestampType,
+    TimestampNTZType,
 )
 
 # design.md §7.3 — exact TLC schema, types as landed. cbd_congestion_fee is
@@ -15,8 +16,8 @@ from pyspark.sql.types import (
 BRONZE_SCHEMA = StructType(
     [
         StructField("VendorID", IntegerType(), True),
-        StructField("tpep_pickup_datetime", TimestampType(), True),
-        StructField("tpep_dropoff_datetime", TimestampType(), True),
+        StructField("tpep_pickup_datetime", TimestampNTZType(), True),
+        StructField("tpep_dropoff_datetime", TimestampNTZType(), True),
         StructField("passenger_count", LongType(), True),
         StructField("trip_distance", DoubleType(), True),
         StructField("RatecodeID", LongType(), True),

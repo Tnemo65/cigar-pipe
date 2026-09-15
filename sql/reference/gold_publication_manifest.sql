@@ -1,9 +1,11 @@
 -- A partition is serving-visible only after a COMMITTED record exists.
+-- BigQuery publication_runs carries the cross-system receipt for native serving.
 CREATE TABLE IF NOT EXISTS taxi_lakehouse.reference.gold_publication_manifest (
   table_name       STRING NOT NULL,
   partition_name   STRING NOT NULL,
   pipeline_run_id  STRING NOT NULL,
   source_snapshot_id STRING,
+  source_snapshot_ids_json STRING,
   delta_version    BIGINT,
   row_count        BIGINT NOT NULL,
   schema_hash      STRING,

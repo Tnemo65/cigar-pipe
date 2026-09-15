@@ -35,8 +35,10 @@ def build_bronze_stream(spark: SparkSession, config: dict):
         .option("cloudFiles.format", "parquet")
         .option("cloudFiles.schemaLocation", paths.schema_location_path("bronze", config))
         .schema(BRONZE_SCHEMA)
-        .option("cloudFiles.schemaHints", "cbd_congestion_fee DOUBLE")
-        .option("cloudFiles.rescuedDataColumn", "_rescued_data")
+        .option("cloudFiles.schemaEvolutionMode", "rescue")
+        .option("cloudFiles.partitionColumns", "")
+        .option("pathGlobFilter", "*.parquet")
+        .option("rescuedDataColumn", "_rescued_data")
     )
     if config.get("databricks", {}).get("use_notifications", False):
         reader = reader.option("cloudFiles.useNotifications", "true")
@@ -46,13 +48,17 @@ def build_bronze_stream(spark: SparkSession, config: dict):
     )
     enriched = (
         add_lineage_columns(raw)
+        .withColumn("source_snapshot_id", F.regexp_extract("_source_file", r"/snapshot=([a-f0-9]{64})/", 1))
+        .withColumn("batch_id", F.col("source_snapshot_id"))
+        .withColumn("source_month", F.to_date(F.regexp_extract("_source_file", r"/source_month=(\d{4}-\d{2}-01)/", 1)))
+        .withColumn("pipeline_run_id", F.lit(config["pipeline_run_id"]))
         .withColumn(
             "_source_object_id",
             F.sha2(F.col("_metadata.file_path"), 256),
         )
         .withColumn(
             "_source_object_version",
-            F.col("_metadata.file_modification_time").cast("string"),
+            F.regexp_extract("_source_file", r"/snapshot=([a-f0-9]{64})/", 1),
         )
     )
 
@@ -65,9 +71,27 @@ def build_bronze_stream(spark: SparkSession, config: dict):
     )
 
 
+def run(spark, config):
+    from src.common.run_state import execute_task
+    def action(payload):
+        query = build_bronze_stream(spark, config)
+        query.awaitTermination()
+        counts = []
+        table = spark.table(paths.catalog_table("bronze", "trips_raw", config))
+        for snapshot in payload["snapshots"]:
+            count = table.filter(F.col("_source_file") == snapshot["uri"]).count()
+            expected_rows = snapshot.get("rows_received")
+            if expected_rows is not None and count != expected_rows:
+                raise RuntimeError(f"Bronze source completeness mismatch: {snapshot['source_month']}")
+
+            counts.append(dict(source_snapshot_id=snapshot["snapshot_id"], rows=count))
+        return {**payload, "bronze_metrics": counts}
+    return execute_task(spark, config, "ingest_bronze", "reference_preflight", action)
+
+
 if __name__ == "__main__":
-    cfg = paths.load_config()
+    from src.common.runtime import configure_spark, runtime_config
+    cfg = runtime_config()
     spark = SparkSession.builder.getOrCreate()
-    query = build_bronze_stream(spark, cfg)
-    query.awaitTermination()
-    print("Bronze stream finished.")
+    configure_spark(spark)
+    run(spark, cfg)

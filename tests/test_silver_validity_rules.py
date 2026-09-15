@@ -12,6 +12,7 @@ ROW_TEMPLATE = dict(
     tpep_dropoff_datetime=datetime(2024, 1, 1, 8, 10, 0),
     trip_distance=2.5,
     fare_amount=12.0,
+    total_amount=15.0,
 )
 
 DIM_ZONE_ROWS = [

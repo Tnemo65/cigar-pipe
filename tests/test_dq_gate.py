@@ -1,40 +1,24 @@
-# tests/test_dq_gate.py
 import pytest
 
-from src.transform.run_dq_gate import check_quarantine_rate, compute_quarantine_rate
+from src.transform.run_dq_gate import check_snapshot_metrics
 
 
-def _seed(spark, clean_count, quarantine_count, month="2024-01-01"):
-    spark.sql("DROP TABLE IF EXISTS local_clean")
-    spark.sql("DROP TABLE IF EXISTS local_quarantine")
-    clean_rows = [(month,)] * clean_count
-    quarantine_rows = [(f"{month} 08:00:00",)] * quarantine_count
-    spark.createDataFrame(clean_rows, ["pickup_month"]).createOrReplaceTempView("local_clean")
-    spark.createDataFrame(
-        quarantine_rows, ["tpep_pickup_datetime"]
-    ).createOrReplaceTempView("local_quarantine")
+def test_snapshot_metrics_calculates_current_snapshot_rate():
+    snapshots = [{"snapshot_id": "source-1", "rows_received": 100}]
+    metrics = [{
+        "source_snapshot_id": "source-1",
+        "rows_in": 100,
+        "rows_out": 97,
+        "rows_quarantined": 3,
+        "raw_rows_quarantined": 3,
+        "rows_deduplicated": 0,
+    }]
 
-
-def test_compute_quarantine_rate(spark):
-    _seed(spark, clean_count=98, quarantine_count=2)
-    rate = compute_quarantine_rate(
-        spark, "2024-01-01", clean_table="local_clean", quarantine_table="local_quarantine"
-    )
-    assert rate == pytest.approx(0.02)
-
-
-def test_check_quarantine_rate_passes_under_threshold(spark):
-    _seed(spark, clean_count=99, quarantine_count=1)
-    check_quarantine_rate(
-        spark, "2024-01-01", threshold=0.02,
-        clean_table="local_clean", quarantine_table="local_quarantine",
-    )  # must not raise
-
-
-def test_check_quarantine_rate_raises_over_threshold(spark):
-    _seed(spark, clean_count=90, quarantine_count=10)
+    check_snapshot_metrics(metrics, snapshots, 0.03)
     with pytest.raises(RuntimeError, match="quarantine rate"):
-        check_quarantine_rate(
-            spark, "2024-01-01", threshold=0.02,
-            clean_table="local_clean", quarantine_table="local_quarantine",
-        )
+        check_snapshot_metrics(metrics, snapshots, 0.02)
+
+
+def test_snapshot_metrics_rejects_missing_snapshot_metric():
+    with pytest.raises(RuntimeError, match="Missing"):
+        check_snapshot_metrics([], [{"snapshot_id": "source-1", "rows_received": 1}], 0.1)

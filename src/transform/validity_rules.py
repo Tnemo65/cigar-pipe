@@ -9,6 +9,8 @@ Each function operates on raw Bronze column names. `reason_code` STRING column
 is populated when invalid (NULL means the row is valid).
 """
 from __future__ import annotations
+from functools import reduce
+from operator import or_
 
 from pyspark.sql import DataFrame, functions as F
 
@@ -19,11 +21,16 @@ def with_trip_id(df: DataFrame) -> DataFrame:
     """design.md §7.2, §11 -- SHA-256 of the widened composite business key.
     Concatenates all 12 key values as strings with '|' separator so that
     (NULL, 1) and (1, NULL) produce different hashes."""
-    concat_expr = F.concat_ws(
-        "|",
-        *[F.coalesce(F.col(c).cast("string"), F.lit("NULL")) for c in BUSINESS_KEY_COLUMNS],
-    )
+    # Full payload identity within a monthly snapshot. Business key is only
+    # diagnostic: TLC does not expose a unique trip ID suitable for upserts.
+    payload_cols = sorted(c for c in df.columns if not c.startswith("_") and c not in
+                          {"source_month", "source_snapshot_id", "pipeline_run_id", "batch_id"})
+    concat_expr = F.to_json(F.struct(*[F.col(c) for c in payload_cols]), {"ignoreNullFields": "false"})
     with_id = df.withColumn("trip_id", F.sha2(concat_expr, 256))
+    business_cols = [c for c in ("VendorID", "tpep_pickup_datetime", "tpep_dropoff_datetime", "PULocationID", "DOLocationID") if c in df.columns]
+    with_id = with_id.withColumn("trip_business_key", F.sha2(F.to_json(F.struct(*business_cols)), 256))
+    if "source_snapshot_id" in df.columns:
+        with_id = with_id.withColumn("source_record_id", F.sha2(F.concat_ws("|", "source_snapshot_id", "trip_id"), 256))
     if "_source_object_id" in df.columns:
         with_id = with_id.withColumn(
             "_source_event_id",
@@ -40,17 +47,31 @@ def flag_implausible_trips(df: DataFrame) -> DataFrame:
     mismatch. Adds `reason_code`; leaves it NULL when none of the three apply.
     Order matters -- negative fare is checked first, matching the spec's own
     ordering of the three conditions."""
-    duration_seconds = F.col("tpep_dropoff_datetime").cast("long") - F.col(
-        "tpep_pickup_datetime"
-    ).cast("long")
+    required = ("tpep_pickup_datetime", "tpep_dropoff_datetime", "fare_amount", "trip_distance", "total_amount")
+    missing = reduce(or_, [F.col(c).isNull() if c in df.columns else F.lit(True) for c in required])
+    numeric = [c for c in df.columns if c in {"trip_distance", "fare_amount", "total_amount", "tip_amount", "extra", "mta_tax", "tolls_amount", "improvement_surcharge", "congestion_surcharge", "Airport_fee", "airport_fee", "cbd_congestion_fee"}]
+    nonfinite = reduce(or_, [(F.isnan(c) | (F.abs(F.col(c)) == float("inf"))) for c in numeric], F.lit(False))
+    money_overflow = reduce(or_, [F.abs(F.col(c)) >= 99999999.995 for c in numeric if c != "trip_distance"], F.lit(False))
+    rescue = F.col("_rescued_data").isNotNull() if "_rescued_data" in df.columns else F.lit(False)
+    total = F.col("total_amount") if "total_amount" in df.columns else F.lit(None).cast("double")
+    negotiated = F.coalesce(F.col("RatecodeID") == 5, F.lit(False)) if "RatecodeID" in df.columns else F.lit(False)
+    outside_month = F.trunc("tpep_pickup_datetime", "month") != F.col("source_month") if "source_month" in df.columns else F.lit(False)
+    duration_seconds = F.unix_timestamp("tpep_dropoff_datetime") - F.unix_timestamp("tpep_pickup_datetime")
     return df.withColumn(
         "reason_code",
-        F.when(F.col("fare_amount") < 0, F.lit("NEGATIVE_FARE"))
+        F.when(rescue, F.lit("SCHEMA_RESCUED_DATA"))
+        .when(missing, F.lit("MISSING_REQUIRED_FIELD"))
+        .when(nonfinite | money_overflow, F.lit("INVALID_NUMERIC_VALUE"))
+        .when(F.col("fare_amount") < 0, F.lit("NEGATIVE_FARE"))
         .when(duration_seconds <= 0, F.lit("NONPOSITIVE_DURATION"))
+        .when(outside_month, F.lit("OUTSIDE_SOURCE_MONTH"))
+        .when(total <= 0, F.lit("NONPOSITIVE_TOTAL"))
+        .when(F.col("trip_distance") < 0, F.lit("NEGATIVE_DISTANCE"))
         .when(
-            (F.col("trip_distance") <= 0) & (F.col("fare_amount") > 0),
+            (F.col("trip_distance") == 0) & (F.col("fare_amount") > 0) & ~negotiated,
             F.lit("DISTANCE_FARE_MISMATCH"),
         )
+        .when((F.col("trip_distance") == 0) & (F.col("fare_amount") == 0), F.lit("ZERO_DISTANCE_ZERO_FARE"))
         .otherwise(F.lit(None).cast("string")),
     )
 

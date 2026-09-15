@@ -24,6 +24,9 @@ def run_gold_sql_file(
     """design.md §12.5 -- runs one Gold mart's parameterized SQL for one
     month. :month substitution is a plain string replace here (Databricks SQL
     tasks handle real parameter binding; this is the local/portable runner)."""
+    from src.common.runtime import month_start
+    month_start(month)
+    paths.identifier(catalog)
     p = Path(sql_path)
     if not p.is_absolute() and not p.exists():
         p = _root / sql_path
@@ -75,68 +78,54 @@ GOLD_DDLS = [
 ]
 
 
-if __name__ == "__main__":
-    from datetime import datetime
-    from src.common.run_log import log_run
+MARTS = ("revenue_by_zone_hour", "fare_integrity_daily", "payment_mix_monthly")
 
-    started_at = datetime.now()
-    status = "SUCCESS"
 
-    cfg = paths.load_config()
-    spark = SparkSession.builder.getOrCreate()
-
-    try:
-        catalog = paths.catalog_name(cfg)
+def run(spark, config):
+    from pyspark.sql import functions as F
+    from src.common.reference import load_references
+    from src.common.run_state import execute_task
+    def action(payload):
+        load_references(spark, config)
+        catalog = paths.catalog_name(config)
         for ddl in gold_ddls(catalog):
             spark.sql(ddl)
+        counts = []
+        for month in payload["months"]:
+            clean = spark.table(paths.catalog_table("silver", "trips_clean", config)).filter(F.col("pickup_month") == month)
+            expected = clean.agg(F.count("*").alias("trips"), F.sum("total_amount").alias("revenue")).first()
+            for mart in MARTS:
+                run_gold_sql_file(spark, f"sql/gold/{mart}.sql", month, catalog)
+                gold = spark.table(paths.catalog_table("gold", mart, config)).filter(F.col("pickup_month") == month)
+                actual = gold.agg(F.count("*").alias("rows"), F.sum("trip_count").alias("trips")).first()
+                if (actual.trips or 0) != expected.trips:
+                    raise RuntimeError(f"Gold trip reconciliation failed: {mart}/{month}")
+                if mart == "revenue_by_zone_hour":
+                    revenue = gold.agg(F.sum("total_revenue")).first()[0]
+                    if (revenue or 0) != (expected.revenue or 0):
+                        raise RuntimeError(f"Gold revenue reconciliation failed: {month}")
+                snapshot_ids = [
+                    snapshot["snapshot_id"]
+                    for snapshot in payload.get("snapshots", [])
+                    if snapshot["source_month"] == month
+                ]
+                counts.append(
+                    dict(
+                        mart=mart,
+                        month=month,
+                        rows=actual.rows,
+                        trips=actual.trips or 0,
+                        pipeline_run_id=config["pipeline_run_id"],
+                        source_snapshot_ids=snapshot_ids,
+                    )
+                )
+        return {**payload, "gold_metrics": counts}
+    return execute_task(spark, config, "aggregate_gold", "dq_gate", action)
 
-        try:
-            from pyspark.dbutils import DBUtils  # type: ignore
 
-            dbutils = DBUtils(spark)
-            months = dbutils.jobs.taskValues.get(
-                taskKey="transform_silver", key="touched_months"
-            )
-        except Exception:
-            months = []
-
-        clean_tbl = paths.catalog_table("silver", "trips_clean", cfg)
-        if spark.catalog.tableExists(clean_tbl):
-            month_counts = {
-                str(r.pickup_month)[:10]: r["count"]
-                for r in spark.table(clean_tbl).groupBy("pickup_month").count().collect()
-                if r.pickup_month
-            }
-            if not months:
-                if cfg.get("ingestion", {}).get("allow_full_history_fallback", False):
-                    months = [m for m, cnt in month_counts.items() if cnt >= 100]
-                else:
-                    months = []
-            else:
-                months = [m for m in months if month_counts.get(m, 0) >= 100]
-
-        for m in months:
-            for sql_file in (
-                "sql/gold/revenue_by_zone_hour.sql",
-                "sql/gold/fare_integrity_daily.sql",
-                "sql/gold/payment_mix_monthly.sql",
-            ):
-                run_gold_sql_file(spark, sql_file, m, paths.catalog_name(cfg))
-        print(f"gold marts refreshed for months: {months}")
-    except Exception:
-        status = "FAILED"
-        raise
-    finally:
-        try:
-            log_run(
-                spark,
-                task_name="aggregate_gold",
-                rows_in=0,
-                rows_out=0,
-                rows_quarantined=0,
-                status=status,
-                started_at=started_at,
-                ended_at=datetime.now(),
-            )
-        except Exception as log_error:
-            print(f"run_log write failed (non-fatal): {log_error}")
+if __name__ == "__main__":
+    from src.common.runtime import configure_spark, runtime_config
+    cfg = runtime_config()
+    spark = SparkSession.builder.getOrCreate()
+    configure_spark(spark)
+    run(spark, cfg)

@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS taxi_lakehouse.reference.dim_payment_type (
 
 TRUNCATE TABLE taxi_lakehouse.reference.dim_payment_type;
 
-INSERT INTO taxi_lakehouse.reference.dim_payment_type VALUES
+INSERT INTO taxi_lakehouse.reference.dim_payment_type (payment_type_id, payment_type_name, tip_is_recorded) VALUES
   (1, 'Credit card', true),
   (2, 'Cash',        false),
   (3, 'No charge',   false),

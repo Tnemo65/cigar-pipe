@@ -65,3 +65,21 @@ def gcs_immutable_uploader(content: bytes, gcs_uri: str, checksum: str) -> Landi
         raise LandingConflict(
             f"immutable object conflict at {gcs_uri}: existing checksum differs"
         ) from error
+
+
+def land_file(filename: str, gcs_uri: str, checksum: str, client=None) -> LandingResult:
+    """Bounded-memory upload; retry accepts only the same immutable object."""
+    from google.api_core.exceptions import PreconditionFailed
+    from google.cloud import storage
+
+    bucket_name, object_name = gcs_uri.removeprefix("gs://").split("/", 1)
+    blob = (client or storage.Client()).bucket(bucket_name).blob(object_name)
+    blob.metadata = {"source_sha256": checksum}
+    try:
+        blob.upload_from_filename(filename, if_generation_match=0, checksum="auto")
+        return LandingResult(gcs_uri, checksum, str(blob.generation), False)
+    except PreconditionFailed as error:
+        blob.reload()
+        if (blob.metadata or {}).get("source_sha256") != checksum:
+            raise LandingConflict(f"Immutable object conflict: {gcs_uri}") from error
+        return LandingResult(gcs_uri, checksum, str(blob.generation), True)

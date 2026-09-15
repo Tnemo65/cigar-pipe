@@ -1,13 +1,31 @@
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
 
-CATALOG = "taxi_lakehouse"
+def _environment(config: dict[str, Any]) -> str:
+    environment = config.get("environment")
+    if environment not in {"dev", "staging", "prod"}:
+        raise ValueError("An explicit dev, staging, or prod environment is required")
+    return environment
 
 
 def catalog_name(config: dict[str, Any] | None = None) -> str:
-    return (config or {}).get("databricks", {}).get("catalog", CATALOG)
+    if config is None:
+        raise ValueError("Runtime configuration is required for catalog resolution")
+    environment = _environment(config)
+    catalog = identifier(config["databricks"]["catalog"])
+    if not catalog.endswith(f"_{environment}"):
+        raise ValueError("Catalog must end with the environment suffix")
+    return catalog
+
+
+
+def identifier(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise ValueError(f"Invalid SQL identifier: {value!r}")
+    return value
 
 
 def load_config(path: str = "configs/config.yaml") -> dict[str, Any]:
@@ -18,18 +36,22 @@ def load_config(path: str = "configs/config.yaml") -> dict[str, Any]:
             candidate = Path(_f).resolve().parents[2] / path
             if candidate.exists():
                 p = candidate
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def catalog_table(schema: str, table: str, config: dict[str, Any] | None = None) -> str:
-    return f"{catalog_name(config)}.{schema}.{table}"
+    return f"{catalog_name(config)}.{identifier(schema)}.{identifier(table)}"
 
 
 def _bucket_uri(config: dict[str, Any], *parts: str) -> str:
+    environment = _environment(config)
     bucket = config["gcp"]["bucket"]
-    suffix = "/".join(parts)
+    if not bucket.endswith(f"-{environment}"):
+        raise ValueError("Bucket must end with the environment suffix")
+    suffix = "/".join((environment, *parts))
     return f"gs://{bucket}/{suffix}/"
+
 
 
 def raw_yellow_path(config: dict[str, Any]) -> str:

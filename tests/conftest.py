@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 # Sanitize Java & Hadoop environment on Windows
-java_home = r"C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot"
+java_home = os.environ.get("JAVA_HOME", "")
 if os.path.isdir(java_home):
     os.environ["JAVA_HOME"] = java_home
     if f"{java_home}\\bin" not in os.environ.get("PATH", ""):
@@ -28,6 +28,8 @@ from pyspark.sql import SparkSession
 
 @pytest.fixture(scope="session")
 def spark():
+    if not shutil.which("java") and not Path(os.environ.get("JAVA_HOME", ""), "bin", "java.exe").is_file():
+        pytest.fail("Java 17 is required; set JAVA_HOME before running Spark tests")
     builder = (
         SparkSession.builder.master("local[2]")
         .appName("taxi-lakehouse-tests")
@@ -39,6 +41,7 @@ def spark():
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
         .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.sql.session.timeZone", "UTC")
     )
     session = configure_spark_with_delta_pip(builder).getOrCreate()
     yield session
