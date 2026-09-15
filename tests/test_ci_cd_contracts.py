@@ -15,10 +15,12 @@ def test_ci_creates_and_uploads_test_evidence():
 
 def test_cd_uses_run_id_from_bundle_output_and_reconciliation():
     workflow = (ROOT / ".github/workflows/cd.yml").read_text()
-    assert "bundle run -o json" in workflow
+    assert "Resolve deployed staging job ID" in workflow
+    assert "databricks jobs list --output json" in workflow
+    assert "databricks jobs list-runs --job-id" in workflow
     assert "first-run-id.txt" in workflow
     assert "replay-run-id.txt" in workflow
-    assert "extract_run_id" in workflow
+    assert "bundle run -o json" not in workflow
     reconciliation = workflow.split("Reconcile the completed staging run", 1)[1]
     assert '--pipeline-run-id "${{ github.run_id }}"' not in reconciliation
     assert 'DATABRICKS_AUTH_TYPE: github-oidc' in workflow
