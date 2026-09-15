@@ -56,6 +56,14 @@ jobs:
           workload_identity_provider: ${{ env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GOOGLE_SERVICE_ACCOUNT }}
 
+      - name: Resolve deployed staging job ID
+        working-directory: jobs
+        run: |
+          mkdir -p ../artifacts
+          databricks jobs list --output json > ../artifacts/jobs.json
+          python -c 'import json; jobs=json.load(open("../artifacts/jobs.json")); matches=[j for j in jobs if j.get("settings",{}).get("name")=="taxi-pipeline-staging"]; assert len(matches)==1, f"expected one staging job, found {len(matches)}"; print(matches[0]["job_id"])' > ../artifacts/staging-job-id.txt
+          echo "STAGING_JOB_ID=$(cat ../artifacts/staging-job-id.txt)" >> "$GITHUB_ENV"
+
       - name: Real source to serving smoke and replay
         working-directory: jobs
         env:
@@ -68,10 +76,12 @@ jobs:
           test -n "$DATABRICKS_HOST" && test -n "$DATABRICKS_CLIENT_ID"
           test -n "$BUNDLE_VAR_catalog" && test -n "$BUNDLE_VAR_bucket"
           mkdir -p ../artifacts
-          databricks bundle run -o json -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false" > ../artifacts/first-run.json
-          uv run python -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd().parent)); from src.common.databricks_run import extract_run_id; print(extract_run_id(Path('../artifacts/first-run.json').read_text()))" > ../artifacts/first-run-id.txt
-          databricks bundle run -o json -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false" > ../artifacts/replay-run.json
-          uv run python -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd().parent)); from src.common.databricks_run import extract_run_id; print(extract_run_id(Path('../artifacts/replay-run.json').read_text()))" > ../artifacts/replay-run-id.txt
+          databricks bundle run -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false"
+          databricks jobs list-runs --job-id "$STAGING_JOB_ID" --limit 1 --output json > ../artifacts/first-run.json
+          python -c 'import json; print(json.load(open("../artifacts/first-run.json"))["runs"][0]["run_id"])' > ../artifacts/first-run-id.txt
+          databricks bundle run -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false"
+          databricks jobs list-runs --job-id "$STAGING_JOB_ID" --limit 1 --output json > ../artifacts/replay-run.json
+          python -c 'import json; print(json.load(open("../artifacts/replay-run.json"))["runs"][0]["run_id"])' > ../artifacts/replay-run-id.txt
           echo "JOB_RUN_ID=$(cat ../artifacts/first-run-id.txt)" >> "$GITHUB_ENV"
 
       - name: Fetch serving handoff
