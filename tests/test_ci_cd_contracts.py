@@ -18,6 +18,7 @@ def test_cd_uses_run_id_from_bundle_output_and_reconciliation():
     assert "bundle run -o json" in workflow
     assert "first-run-id.txt" in workflow
     assert "replay-run-id.txt" in workflow
+    assert "extract_run_id" in workflow
     reconciliation = workflow.split("Reconcile the completed staging run", 1)[1]
     assert '--pipeline-run-id "${{ github.run_id }}"' not in reconciliation
     assert 'DATABRICKS_AUTH_TYPE: github-oidc' in workflow
