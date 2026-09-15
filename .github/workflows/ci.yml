@@ -23,13 +23,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: "temurin"
           java-version: "17"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v5
         with:
           version: "0.9.18"
           enable-cache: true
@@ -73,8 +73,17 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.8
-      - working-directory: infra
+      - name: Validate Terraform configuration without cloud access
+        working-directory: infra
+        env:
+          TF_VAR_project_id: taxi-data-engineer
+          TF_VAR_environment: dev
+          TF_VAR_region: us-central1
+          TF_VAR_uc_storage_service_account: ci-placeholder@example.iam.gserviceaccount.com
+          TF_VAR_monthly_budget_usd: "50"
+          TF_VAR_billing_account_id: ""
+          TF_VAR_budget_alert_emails: "[]"
         run: |
           terraform fmt -check
-          terraform init -backend=false
+          terraform init -backend=false -input=false
           terraform validate

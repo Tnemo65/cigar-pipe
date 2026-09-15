@@ -87,7 +87,7 @@ resource "google_monitoring_notification_channel" "budget_email" {
 }
 
 resource "google_billing_budget" "environment" {
-  count = local.manage_project_budget ? 1 : 0
+  count           = local.manage_project_budget ? 1 : 0
   billing_account = var.billing_account_id
   display_name    = "taxi-lakehouse-${var.environment}"
 
