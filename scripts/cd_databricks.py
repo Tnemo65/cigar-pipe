@@ -21,17 +21,17 @@ def collection(payload: Any, key: str) -> list[dict[str, Any]]:
     raise ValueError(f"Expected a JSON list or object containing '{key}'")
 
 
-def select_job(payload: Any, name: str, creator: str) -> str:
+def select_job(payload: Any, name: str, target: str) -> str:
     jobs = collection(payload, "jobs")
     matches = [
         job
         for job in jobs
         if job.get("settings", {}).get("name") == name
-        and job.get("creator_user_name") == creator
         and job.get("settings", {}).get("deployment", {}).get("kind") == "BUNDLE"
+        and f"/{target}/" in job.get("settings", {}).get("deployment", {}).get("metadata_file_path", "")
     ]
     if not matches:
-        raise ValueError(f"No Bundle-managed job found for name={name!r}, creator={creator!r}")
+        raise ValueError(f"No Bundle-managed job found for name={name!r}, target={target!r}")
     # Repeated deploys can leave more than one valid Bundle job. Select the newest
     # deployment instead of failing on an unrelated older duplicate.
     selected = max(matches, key=lambda job: int(job.get("created_time", 0)))
@@ -89,7 +89,7 @@ def main() -> None:
     select_parser = subparsers.add_parser("select-job")
     select_parser.add_argument("--input", required=True)
     select_parser.add_argument("--name", required=True)
-    select_parser.add_argument("--creator", required=True)
+    select_parser.add_argument("--target", required=True)
 
     run_parser = subparsers.add_parser("latest-run")
     run_parser.add_argument("--input", required=True)
@@ -97,7 +97,7 @@ def main() -> None:
     args = parser.parse_args()
     payload = load_json(args.input)
     if args.command == "select-job":
-        print(select_job(payload, args.name, args.creator))
+        print(select_job(payload, args.name, args.target))
     else:
         print(latest_run_id(payload))
 

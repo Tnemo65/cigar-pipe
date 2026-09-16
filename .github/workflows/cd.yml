@@ -58,13 +58,15 @@ jobs:
 
       - name: Resolve deployed staging job ID
         working-directory: jobs
+        env:
+          RUNTIME_PRINCIPAL: ${{ env.BUNDLE_VAR_run_as_service_principal }}
         run: |
           mkdir -p ../artifacts
           databricks jobs list --output json > ../artifacts/jobs.json
           uv run python ../scripts/cd_databricks.py select-job \
             --input ../artifacts/jobs.json \
             --name taxi-pipeline-staging \
-            --creator "$BUNDLE_VAR_run_as_service_principal" > ../artifacts/staging-job-id.txt
+            --target staging > ../artifacts/staging-job-id.txt
           echo "STAGING_JOB_ID=$(cat ../artifacts/staging-job-id.txt)" >> "$GITHUB_ENV"
 
       - name: Real source to serving smoke and replay
@@ -80,10 +82,31 @@ jobs:
           test -n "$DATABRICKS_HOST" && test -n "$DATABRICKS_CLIENT_ID"
           test -n "$BUNDLE_VAR_catalog" && test -n "$BUNDLE_VAR_bucket"
           mkdir -p ../artifacts
-          python -c 'import os,sys; sys.path.insert(0,".."); from scripts.cd_databricks import launch_run,wait_for_run; params={"start_month":os.environ["START_MONTH"],"end_month":os.environ["END_MONTH"],"source_uri":os.environ["SOURCE_URI_MAP"],"allow_unpublished":"false"}; run=launch_run(os.environ["STAGING_JOB_ID"],params,os.environ.get("DATABRICKS_PROFILE","")); print(run); wait_for_run(run,1800,os.environ.get("DATABRICKS_PROFILE",""))' > ../artifacts/first-run-id.txt
-          test -s ../artifacts/first-run-id.txt
-          python -c 'import os,sys; sys.path.insert(0,".."); from scripts.cd_databricks import launch_run,wait_for_run; params={"start_month":os.environ["START_MONTH"],"end_month":os.environ["END_MONTH"],"source_uri":os.environ["SOURCE_URI_MAP"],"allow_unpublished":"false"}; run=launch_run(os.environ["STAGING_JOB_ID"],params,os.environ.get("DATABRICKS_PROFILE","")); print(run); wait_for_run(run,1800,os.environ.get("DATABRICKS_PROFILE",""))' > ../artifacts/replay-run-id.txt
+          uv run python ../scripts/run_cd_job.py \
+            --jobs-json ../artifacts/jobs.json \
+            --job-name taxi-pipeline-staging \
+            --target staging \
+            --start-month "$START_MONTH" \
+            --end-month "$END_MONTH" \
+            --source-uri "$SOURCE_URI_MAP" \
+            --profile "$DATABRICKS_PROFILE" \
+            --output ../artifacts/first-run.json
+          jq -r .run_id ../artifacts/first-run.json > ../artifacts/first-run-id.txt
+          uv run python ../scripts/run_cd_job.py \
+            --jobs-json ../artifacts/jobs.json \
+            --job-name taxi-pipeline-staging \
+            --target staging \
+            --start-month "$START_MONTH" \
+            --end-month "$END_MONTH" \
+            --source-uri "$SOURCE_URI_MAP" \
+            --profile "$DATABRICKS_PROFILE" \
+            --output ../artifacts/replay-run.json
+          jq -r .run_id ../artifacts/replay-run.json > ../artifacts/replay-run-id.txt
           test "$(cat ../artifacts/first-run-id.txt)" != "$(cat ../artifacts/replay-run-id.txt)"
+          uv run python ../scripts/compare_replay.py \
+            --initial ../artifacts/first-run.json \
+            --replay ../artifacts/replay-run.json \
+            --output ../artifacts/replay-comparison.json
           echo "JOB_RUN_ID=$(cat ../artifacts/first-run-id.txt)" >> "$GITHUB_ENV"
 
       - name: Fetch serving handoff
