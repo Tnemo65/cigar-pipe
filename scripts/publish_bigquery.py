@@ -6,6 +6,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -27,14 +28,35 @@ def stage_table_name(mart: str, pipeline_run_id: str) -> str:
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def validate_handoff_target(handoff: dict, environment: str, project: str, dataset: str, bucket: str) -> None:
+    if handoff.get("environment") != environment:
+        raise ValueError("handoff environment does not match publisher environment")
+    if handoff.get("project_id") != project or handoff.get("dataset") != dataset:
+        raise ValueError("handoff BigQuery target does not match publisher target")
+    prefix = f"gs://{bucket}/{environment}/gold_export/"
+    for export in handoff.get("exports", []):
+        if not export.get("uri", "").startswith(prefix):
+            raise ValueError("handoff export URI is outside the expected environment prefix")
+
+
 def load_handoff(path: str) -> dict:
     handoff = json.loads(Path(path).read_text(encoding="utf-8"))
-    required = {"pipeline_run_id", "environment", "project_id", "dataset", "months", "gold_metrics"}
+    required = {
+        "pipeline_run_id", "environment", "project_id", "dataset", "months",
+        "gold_metrics", "exports", "status",
+    }
     missing = required - set(handoff)
     if missing:
         raise ValueError(f"Serving handoff missing fields: {sorted(missing)}")
     if handoff["status"] != "READY_FOR_SERVING":
         raise ValueError(f"Serving handoff is not publishable: {handoff['status']}")
+    expected_marts = set(TARGET_SCHEMAS)
+    metrics = {(metric["mart"], metric["month"]) for metric in handoff["gold_metrics"]}
+    exports = {(export["mart"], export["month"]) for export in handoff["exports"]}
+    if metrics != exports or {mart for mart, _ in metrics} != expected_marts:
+        raise ValueError("Handoff exports and metrics must cover every mart/month exactly once")
+    if len(metrics) != len(handoff["gold_metrics"]) or len(exports) != len(handoff["exports"]):
+        raise ValueError("Handoff contains duplicate mart/month entries")
     return handoff
 
 
@@ -164,20 +186,32 @@ def publish_handoff(handoff: dict, client=None) -> dict:
     stages: dict[str, str] = {}
     attempt_id = uuid.uuid4().hex[:12]
     expiration = datetime.now(timezone.utc) + timedelta(days=2)
+    seen: set[tuple[str, str]] = set()
+    loaded_marts: set[str] = set()
     for export in handoff["exports"]:
         if export["month"] not in handoff["months"]:
             raise ValueError("Export month is outside the handoff affected-month set")
         mart = export["mart"]
-        stage = stage_table_name(mart, f"{handoff['pipeline_run_id']}_{attempt_id}")
-        stages[mart] = stage
+        entry = (mart, export["month"])
+        if entry in seen:
+            raise ValueError(f"Duplicate handoff export: {mart}/{export['month']}")
+        seen.add(entry)
+        stage = stages.setdefault(
+            mart, stage_table_name(mart, f"{handoff['pipeline_run_id']}_{attempt_id}")
+        )
         table_ref = f"{project}.{dataset}.{stage}"
         config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.PARQUET,
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            write_disposition=(
+                bigquery.WriteDisposition.WRITE_TRUNCATE
+                if mart not in loaded_marts
+                else bigquery.WriteDisposition.WRITE_APPEND
+            ),
             autodetect=True,
         )
         load_job = client.load_table_from_uri(export["uri"] + "/*.parquet", table_ref, job_config=config)
         load_job.result()
+        loaded_marts.add(mart)
         table = client.get_table(table_ref)
         table.expires = expiration
         client.update_table(table, ["expires"])
@@ -211,12 +245,17 @@ def main() -> None:
     parser.add_argument("--handoff", required=True)
     parser.add_argument("--environment", choices=("dev", "staging"), required=True)
     parser.add_argument("--confirm-cost", action="store_true")
+    parser.add_argument("--project", default="taxi-data-engineer")
+    parser.add_argument("--dataset", default="taxi_analytics_staging")
+    parser.add_argument("--bucket", default="taxi-data-engineer-taxi-lake-staging")
     args = parser.parse_args()
     assert_non_production(args.environment)
     assert_confirmed(args.confirm_cost)
     handoff = load_handoff(args.handoff)
-    if handoff["environment"] != args.environment:
-        raise ValueError("handoff environment does not match command environment")
+    project = args.project
+    dataset = args.dataset
+    bucket = args.bucket
+    validate_handoff_target(handoff, args.environment, project, dataset, bucket)
     print(json.dumps(publish_handoff(handoff), indent=2))
 
 

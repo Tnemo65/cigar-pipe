@@ -19,31 +19,34 @@ def reconcile(handoff: dict, client=None) -> dict:
     client = client or bigquery.Client(project=handoff["project_id"])
     project = handoff["project_id"]
     dataset = handoff["dataset"]
-    month = handoff["months"][0]
     rows = {}
-    for mart in MARTS:
-        query = f"""
-            SELECT COUNT(*) AS row_count, SUM(trip_count) AS trip_count
-            FROM `{project}.{dataset}.{mart}`
-            WHERE pickup_month = @month
-        """
-        job = client.query(
-            query,
-            location="us-central1",
-            job_config=bigquery.QueryJobConfig(
-                query_parameters=[bigquery.ScalarQueryParameter("month", "DATE", month)]
-            ),
-        )
-        row = list(job.result())[0]
-        expected = next(metric for metric in handoff["gold_metrics"] if metric["mart"] == mart)
-        rows[mart] = {
-            "row_count": row.row_count,
-            "trip_count": row.trip_count,
-            "expected_row_count": expected["rows"],
-            "expected_trip_count": expected["trips"],
-            "row_count_match": row.row_count == expected["rows"],
-            "trip_count_match": row.trip_count == expected["trips"],
-        }
+    for month in handoff["months"]:
+        for mart in MARTS:
+            query = f"""
+                SELECT COUNT(*) AS row_count, SUM(trip_count) AS trip_count
+                FROM `{project}.{dataset}.{mart}`
+                WHERE pickup_month = @month
+            """
+            job = client.query(
+                query,
+                location="us-central1",
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[bigquery.ScalarQueryParameter("month", "DATE", month)]
+                ),
+            )
+            row = list(job.result())[0]
+            expected = next(
+                metric for metric in handoff["gold_metrics"]
+                if metric["mart"] == mart and metric["month"] == month
+            )
+            rows[f"{mart}/{month}"] = {
+                "row_count": row.row_count,
+                "trip_count": row.trip_count,
+                "expected_row_count": expected["rows"],
+                "expected_trip_count": expected["trips"],
+                "row_count_match": row.row_count == expected["rows"],
+                "trip_count_match": row.trip_count == expected["trips"],
+            }
 
     receipt_query = f"""
         SELECT pipeline_run_id, environment, months_json, snapshot_ids_json, published_at
@@ -59,8 +62,15 @@ def reconcile(handoff: dict, client=None) -> dict:
             ]
         ),
     ).result())
-    result = {"status": "RECONCILED", "pipeline_run_id": handoff["pipeline_run_id"], "marts": rows, "receipt_count": len(receipt)}
-    if len(receipt) != 1 or not all(item["row_count_match"] and item["trip_count_match"] for item in rows.values()):
+    receipt_ok = len(receipt) == 1 and receipt[0].environment == handoff["environment"]
+    result = {
+        "status": "RECONCILED",
+        "pipeline_run_id": handoff["pipeline_run_id"],
+        "marts": rows,
+        "receipt_count": len(receipt),
+        "receipt_environment_match": receipt_ok,
+    }
+    if not receipt_ok or not all(item["row_count_match"] and item["trip_count_match"] for item in rows.values()):
         raise RuntimeError(json.dumps(result, sort_keys=True))
     return result
 

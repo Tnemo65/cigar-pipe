@@ -17,9 +17,11 @@ def test_cd_uses_run_id_from_bundle_output_and_reconciliation():
     workflow = (ROOT / ".github/workflows/cd.yml").read_text()
     assert "Resolve deployed staging job ID" in workflow
     assert "databricks jobs list --output json" in workflow
-    assert "databricks jobs list-runs --job-id" in workflow
-    assert "creator_user_name" in workflow
-    assert "deployment" in workflow
+    assert "launch_run" in (ROOT / "scripts/cd_databricks.py").read_text()
+    assert "wait_for_run" in (ROOT / "scripts/cd_databricks.py").read_text()
+    helper = (ROOT / "scripts/cd_databricks.py").read_text()
+    assert "creator_user_name" in helper
+    assert "deployment" in helper
     assert "first-run-id.txt" in workflow
     assert "replay-run-id.txt" in workflow
     assert "bundle run -o json" not in workflow

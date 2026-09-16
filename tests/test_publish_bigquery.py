@@ -18,6 +18,10 @@ def handoff():
             {"mart": "fare_integrity_daily", "month": "2024-01-01", "rows": 1, "trips": 2},
             {"mart": "payment_mix_monthly", "month": "2024-01-01", "rows": 1, "trips": 2},
         ],
+        "exports": [
+            {"mart": mart, "month": "2024-01-01", "uri": f"gs://bucket/{mart}"}
+            for mart in ("revenue_by_zone_hour", "fare_integrity_daily", "payment_mix_monthly")
+        ],
         "status": "READY_FOR_SERVING",
     }
 
