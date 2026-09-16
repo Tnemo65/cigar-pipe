@@ -20,7 +20,7 @@ def test_cd_uses_run_id_from_bundle_output_and_reconciliation():
     assert "launch_run" in (ROOT / "scripts/cd_databricks.py").read_text()
     assert "wait_for_run" in (ROOT / "scripts/cd_databricks.py").read_text()
     helper = (ROOT / "scripts/cd_databricks.py").read_text()
-    assert "creator_user_name" in helper
+    assert "metadata_file_path" in helper
     assert "deployment" in helper
     assert "first-run-id.txt" in workflow
     assert "replay-run-id.txt" in workflow
