@@ -26,7 +26,6 @@ def main() -> None:
     parser.add_argument("--end-month", required=True)
     parser.add_argument("--source-uri", required=True)
     parser.add_argument("--profile", default="")
-    parser.add_argument("--source-uri", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
