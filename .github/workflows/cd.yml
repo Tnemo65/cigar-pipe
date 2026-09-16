@@ -61,7 +61,10 @@ jobs:
         run: |
           mkdir -p ../artifacts
           databricks jobs list --output json > ../artifacts/jobs.json
-          python -c 'import json,os; jobs=json.load(open("../artifacts/jobs.json")); expected=os.environ["BUNDLE_VAR_run_as_service_principal"]; matches=[j for j in jobs if j.get("settings",{}).get("name")=="taxi-pipeline-staging" and j.get("creator_user_name")==expected and j.get("settings",{}).get("deployment",{}).get("kind")=="BUNDLE"]; assert len(matches)==1, f"expected one Bundle-managed staging job for {expected}, found {len(matches)}"; print(matches[0]["job_id"])' > ../artifacts/staging-job-id.txt
+          uv run python ../scripts/cd_databricks.py select-job \
+            --input ../artifacts/jobs.json \
+            --name taxi-pipeline-staging \
+            --creator "$BUNDLE_VAR_run_as_service_principal" > ../artifacts/staging-job-id.txt
           echo "STAGING_JOB_ID=$(cat ../artifacts/staging-job-id.txt)" >> "$GITHUB_ENV"
 
       - name: Real source to serving smoke and replay
@@ -70,18 +73,17 @@ jobs:
           START_MONTH: ${{ vars.SMOKE_START_MONTH }}
           END_MONTH: ${{ vars.SMOKE_END_MONTH }}
           SOURCE_URI_MAP: ${{ vars.SOURCE_URI_MAP }}
+          DATABRICKS_PROFILE: ${{ vars.DATABRICKS_PROFILE }}
         run: |
           test -n "$START_MONTH" && test -n "$END_MONTH"
           test -n "$SOURCE_URI_MAP"
           test -n "$DATABRICKS_HOST" && test -n "$DATABRICKS_CLIENT_ID"
           test -n "$BUNDLE_VAR_catalog" && test -n "$BUNDLE_VAR_bucket"
           mkdir -p ../artifacts
-          databricks bundle run -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false"
-          databricks jobs list-runs --job-id "$STAGING_JOB_ID" --limit 1 --output json > ../artifacts/first-run.json
-          python -c 'import json; print(json.load(open("../artifacts/first-run.json"))["runs"][0]["run_id"])' > ../artifacts/first-run-id.txt
-          databricks bundle run -t staging taxi_pipeline --params "start_month=$START_MONTH,end_month=$END_MONTH,source_uri=$SOURCE_URI_MAP,allow_unpublished=false"
-          databricks jobs list-runs --job-id "$STAGING_JOB_ID" --limit 1 --output json > ../artifacts/replay-run.json
-          python -c 'import json; print(json.load(open("../artifacts/replay-run.json"))["runs"][0]["run_id"])' > ../artifacts/replay-run-id.txt
+          python -c 'import os,sys; sys.path.insert(0,".."); from scripts.cd_databricks import launch_run,wait_for_run; params={"start_month":os.environ["START_MONTH"],"end_month":os.environ["END_MONTH"],"source_uri":os.environ["SOURCE_URI_MAP"],"allow_unpublished":"false"}; run=launch_run(os.environ["STAGING_JOB_ID"],params,os.environ.get("DATABRICKS_PROFILE","")); print(run); wait_for_run(run,1800,os.environ.get("DATABRICKS_PROFILE",""))' > ../artifacts/first-run-id.txt
+          test -s ../artifacts/first-run-id.txt
+          python -c 'import os,sys; sys.path.insert(0,".."); from scripts.cd_databricks import launch_run,wait_for_run; params={"start_month":os.environ["START_MONTH"],"end_month":os.environ["END_MONTH"],"source_uri":os.environ["SOURCE_URI_MAP"],"allow_unpublished":"false"}; run=launch_run(os.environ["STAGING_JOB_ID"],params,os.environ.get("DATABRICKS_PROFILE","")); print(run); wait_for_run(run,1800,os.environ.get("DATABRICKS_PROFILE",""))' > ../artifacts/replay-run-id.txt
+          test "$(cat ../artifacts/first-run-id.txt)" != "$(cat ../artifacts/replay-run-id.txt)"
           echo "JOB_RUN_ID=$(cat ../artifacts/first-run-id.txt)" >> "$GITHUB_ENV"
 
       - name: Fetch serving handoff
@@ -105,6 +107,9 @@ jobs:
           uv run python scripts/publish_bigquery.py \
             --handoff artifacts/serving-handoff.json \
             --environment staging \
+            --project "$BUNDLE_VAR_gcp_project" \
+            --dataset "$BUNDLE_VAR_dataset" \
+            --bucket "$BUNDLE_VAR_bucket" \
             --confirm-cost > artifacts/publication.json
 
       - name: Reconcile the completed staging run

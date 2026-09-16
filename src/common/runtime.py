@@ -59,6 +59,16 @@ def runtime_config(argv=None):
     if args.start_month:
         month_start(args.start_month)
         month_start(args.end_month)
+        from src.ingestion.source_landing import months_between
+
+        expected_months = set(months_between(args.start_month, args.end_month))
+        if cfg_source_uris := args.source_uri:
+            source_months = set()
+            for mapping in cfg_source_uris:
+                for item in mapping.split(";"):
+                    source_months.add(item.split("=", 1)[0].strip())
+            if source_months != expected_months:
+                raise ValueError("source-uri map must cover every requested month exactly")
         if args.start_month > args.end_month:
             raise ValueError("Backfill range is reversed")
         start, end = date.fromisoformat(args.start_month), date.fromisoformat(args.end_month)
