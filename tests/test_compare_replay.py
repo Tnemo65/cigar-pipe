@@ -4,8 +4,16 @@ from scripts.compare_replay import compare
 
 
 def run(run_id):
-    tasks = [{"task_key": key} for key in ("source_landing", "reference_preflight", "ingest_bronze", "transform_silver", "dq_gate", "aggregate_gold", "export_bigquery", "monitor")]
-    return {"run_id": run_id, "run_duration": 1, "state": {"result_state": "SUCCESS"}, "tasks": tasks}
+    tasks = [
+        {"task_key": key, "state": {"result_state": "SUCCESS"}}
+        for key in ("source_landing", "reference_preflight", "ingest_bronze", "transform_silver", "dq_gate", "aggregate_gold", "export_bigquery", "monitor")
+    ]
+    return {
+        "run_id": run_id,
+        "status": "SUCCESS",
+        "run_duration": 1,
+        "run": {"run_id": run_id, "state": {"result_state": "SUCCESS"}, "tasks": tasks},
+    }
 
 
 def test_compare_replay_requires_distinct_successful_runs():
@@ -20,6 +28,6 @@ def test_compare_replay_rejects_same_run():
 
 def test_compare_replay_rejects_missing_task():
     broken = run("broken")
-    broken["tasks"] = broken["tasks"][:-1]
+    broken["run"]["tasks"] = broken["run"]["tasks"][:-1]
     with pytest.raises(ValueError, match="incomplete"):
         compare(run("initial"), broken)
