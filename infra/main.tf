@@ -118,7 +118,7 @@ resource "google_billing_budget" "environment" {
     # Default billing recipients receive threshold notifications; the channel
     # resource remains managed for later explicit wiring.
     monitoring_notification_channels = var.budget_notification_channels
-    disable_default_iam_recipients = false
+    disable_default_iam_recipients   = false
   }
 }
 
