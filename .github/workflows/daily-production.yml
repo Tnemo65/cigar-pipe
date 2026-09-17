@@ -9,6 +9,11 @@ on:
         description: Type RUN_PRODUCTION_DAILY to run manually
         required: true
         type: string
+      source_uri_map:
+        description: Optional MONTH=gs://... override for an already-landed snapshot
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -35,6 +40,7 @@ jobs:
       GOOGLE_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
       GOOGLE_SERVICE_ACCOUNT: ${{ vars.VERIFICATION_SERVICE_ACCOUNT }}
       SOURCE_LOOKBACK_MONTHS: "2"
+      SOURCE_URI_OVERRIDE: ${{ inputs.source_uri_map }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,18 +73,36 @@ jobs:
         id: source
         run: |
           mkdir -p artifacts
-          uv run python scripts/daily_source_landing.py \
-            --bucket "$BUNDLE_VAR_bucket" \
-            --lookback-months "$SOURCE_LOOKBACK_MONTHS" \
-            --output artifacts/source-landing.json
+          if [ -n "$SOURCE_URI_OVERRIDE" ]; then
+            python - <<'PY'
+            import json, os
+            from pathlib import Path
+            value = os.environ["SOURCE_URI_OVERRIDE"].strip()
+            month, separator, uri = value.partition("=")
+            if not separator or not uri.startswith("gs://"):
+                raise SystemExit("source_uri_map must be MONTH=gs://...")
+            result = {"status": "LANDED_OVERRIDE", "month": month, "uri": uri}
+            Path("artifacts/source-landing.json").write_text(json.dumps(result, indent=2))
+            Path("artifacts/source-month").write_text(month)
+            check = __import__("subprocess").run(["gcloud", "storage", "objects", "describe", uri, "--project", os.environ["BUNDLE_VAR_gcp_project"], "--format=value(name)"], capture_output=True, text=True)
+            if check.returncode != 0:
+                raise SystemExit(f"Landed source object is unavailable: {uri}")
+            Path("artifacts/source-uri").write_text(value)
+            PY
+          else
+            uv run python scripts/daily_source_landing.py \
+              --bucket "$BUNDLE_VAR_bucket" \
+              --lookback-months "$SOURCE_LOOKBACK_MONTHS" \
+              --output artifacts/source-landing.json
+          fi
           python - <<'PY'
-          import json, os
+          import json
           from pathlib import Path
           result = json.loads(Path("artifacts/source-landing.json").read_text())
           print(f"status={result['status']}")
           if result["status"] == "NO_DATA":
               Path("artifacts/no-data").touch()
-          else:
+          elif result["status"] != "LANDED_OVERRIDE":
               Path("artifacts/source-month").write_text(result["month"])
               Path("artifacts/source-uri").write_text(f"{result['month']}={result['uri']}")
           PY
