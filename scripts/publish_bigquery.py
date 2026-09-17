@@ -243,13 +243,17 @@ def publish_handoff(handoff: dict, client=None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--handoff", required=True)
-    parser.add_argument("--environment", choices=("dev", "staging"), required=True)
+    parser.add_argument("--environment", choices=("dev", "staging", "prod"), required=True)
     parser.add_argument("--confirm-cost", action="store_true")
+    parser.add_argument("--confirm-production", action="store_true")
     parser.add_argument("--project", default="taxi-data-engineer")
     parser.add_argument("--dataset", default="taxi_analytics_staging")
     parser.add_argument("--bucket", default="taxi-data-engineer-taxi-lake-staging")
     args = parser.parse_args()
-    assert_non_production(args.environment)
+    if args.environment == "prod" and not args.confirm_production:
+        raise ValueError("Production publication requires --confirm-production")
+    if args.environment != "prod":
+        assert_non_production(args.environment)
     assert_confirmed(args.confirm_cost)
     handoff = load_handoff(args.handoff)
     project = args.project

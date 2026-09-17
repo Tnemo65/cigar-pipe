@@ -16,8 +16,14 @@ def validate_state(status, payload):
         raise ValueError(f"Invalid status {status}")
     if status == "SUCCESS" and not payload.get("snapshots"):
         raise ValueError("SUCCESS requires source snapshots")
-    if status == "NO_DATA" and payload.get("snapshots"):
-        raise ValueError("NO_DATA cannot contain work")
+    if status == "NO_DATA":
+        snapshots = payload.get("snapshots") or []
+        metrics = payload.get("metrics") or []
+        replay = payload.get("reason") == "snapshot_already_processed"
+        if snapshots and not replay:
+            raise ValueError("NO_DATA cannot contain unprocessed work")
+        if replay and any(metric.get("rows_in", 0) != 0 for metric in metrics):
+            raise ValueError("Replay NO_DATA requires zero input rows")
 
 
 class RunState:
