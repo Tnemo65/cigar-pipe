@@ -5,9 +5,14 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Callable
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import requests
 

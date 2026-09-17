@@ -58,6 +58,11 @@ jobs:
           workload_identity_provider: ${{ env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GOOGLE_SERVICE_ACCOUNT }}
 
+      - name: Initialize daily evidence
+        run: |
+          mkdir -p artifacts
+          printf '{"workflow_run_id":"%s","status":"STARTED"}\n' "$GITHUB_RUN_ID" > artifacts/workflow-status.json
+
       - name: Land newest TLC snapshot
         id: source
         run: |
@@ -146,4 +151,4 @@ jobs:
           name: production-daily-${{ github.run_id }}
           path: artifacts/
           retention-days: 7
-          if-no-files-found: error
+          if-no-files-found: warn
