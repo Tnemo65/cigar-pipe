@@ -43,7 +43,11 @@ def check_snapshot_metrics(metrics, snapshots, threshold):
 def run(spark, config):
     from src.common.run_state import execute_task
     def action(payload):
-        check_snapshot_metrics(payload.get("metrics"), payload["snapshots"], config["thresholds"]["quarantine_rate_max"])
+        metrics = payload.get("metrics") or []
+        if metrics and all(metric.get("rows_in", 0) == 0 for metric in metrics):
+            return {**payload, "status": "NO_DATA", "reason": "snapshot_already_processed"}
+        check_snapshot_metrics(metrics, payload["snapshots"], config["thresholds"]["quarantine_rate_max"])
+
         minimum = config.get("monitoring", {}).get("min_snapshot_rows", 100)
         if any(
             s.get("rows_received") is not None and s["rows_received"] < minimum

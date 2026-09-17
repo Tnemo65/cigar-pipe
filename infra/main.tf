@@ -114,10 +114,10 @@ resource "google_billing_budget" "environment" {
   }
 
   all_updates_rule {
-    monitoring_notification_channels = concat(
-      var.budget_notification_channels,
-      [for channel in google_monitoring_notification_channel.budget_email : channel.id],
-    )
+    # Keep budget creation independent from unverified email-channel state.
+    # Default billing recipients receive threshold notifications; the channel
+    # resource remains managed for later explicit wiring.
+    monitoring_notification_channels = var.budget_notification_channels
     disable_default_iam_recipients = false
   }
 }
@@ -256,6 +256,12 @@ resource "google_bigquery_dataset_iam_member" "serving_editor" {
   dataset_id = google_bigquery_dataset.serving.dataset_id
   role       = "roles/bigquery.dataEditor"
   member     = "serviceAccount:${google_service_account.runtime["serving"].email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "github_publisher_editor" {
+  dataset_id = google_bigquery_dataset.serving.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:taxi-github-${var.environment}@${var.project_id}.iam.gserviceaccount.com"
 }
 
 resource "google_project_iam_member" "job_user" {

@@ -1,0 +1,149 @@
+name: Daily production pipeline
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RUN_PRODUCTION_DAILY to run manually
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: taxi-production-daily
+  cancel-in-progress: false
+
+jobs:
+  daily-production:
+    if: github.event_name == 'schedule' || inputs.confirmation == 'RUN_PRODUCTION_DAILY'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_AUTH_TYPE: github-oidc
+      BUNDLE_VAR_run_as_service_principal: ${{ vars.RUNTIME_PRINCIPAL_ID }}
+      BUNDLE_VAR_gcp_project: ${{ vars.GCP_PROJECT_ID }}
+      BUNDLE_VAR_bucket: ${{ vars.GCS_BUCKET }}
+      BUNDLE_VAR_catalog: ${{ vars.UC_CATALOG }}
+      BUNDLE_VAR_dataset: ${{ vars.BQ_DATASET }}
+      GOOGLE_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+      GOOGLE_SERVICE_ACCOUNT: ${{ vars.VERIFICATION_SERVICE_ACCOUNT }}
+      SOURCE_LOOKBACK_MONTHS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.18"
+          enable-cache: true
+
+      - uses: databricks/setup-cli@v1.9.0
+        with:
+          version: 1.15.0
+
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+
+      - name: Authenticate GCP publisher
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GOOGLE_SERVICE_ACCOUNT }}
+
+      - name: Land newest TLC snapshot
+        id: source
+        run: |
+          mkdir -p artifacts
+          uv run python scripts/daily_source_landing.py \
+            --bucket "$BUNDLE_VAR_bucket" \
+            --lookback-months "$SOURCE_LOOKBACK_MONTHS" \
+            --output artifacts/source-landing.json
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads(Path("artifacts/source-landing.json").read_text())
+          print(f"status={result['status']}")
+          if result["status"] == "NO_DATA":
+              Path("artifacts/no-data").touch()
+          else:
+              Path("artifacts/source-month").write_text(result["month"])
+              Path("artifacts/source-uri").write_text(f"{result['month']}={result['uri']}")
+          PY
+
+      - name: Stop successfully when no new source is published
+        if: hashFiles('artifacts/no-data') != ''
+        run: echo "No new TLC snapshot is available; no Databricks compute was started."
+
+      - name: Resolve production job
+        if: hashFiles('artifacts/no-data') == ''
+        working-directory: jobs
+        run: |
+          databricks jobs list --output json > ../artifacts/jobs.json
+          uv run python ../scripts/cd_databricks.py select-job \
+            --input ../artifacts/jobs.json \
+            --name taxi-pipeline-prod \
+            --target prod > ../artifacts/production-job-id.txt
+
+      - name: Run production lakehouse
+        if: hashFiles('artifacts/no-data') == ''
+        working-directory: jobs
+        run: |
+          uv run python ../scripts/run_cd_job.py \
+            --jobs-json ../artifacts/jobs.json \
+            --job-name taxi-pipeline-prod \
+            --target prod \
+            --start-month "$(cat ../artifacts/source-month)" \
+            --end-month "$(cat ../artifacts/source-month)" \
+            --source-uri "$(cat ../artifacts/source-uri)" \
+            --output ../artifacts/production-run.json
+          echo "JOB_RUN_ID=$(python -c 'import json; print(json.load(open("../artifacts/production-run.json"))["run_id"])')" >> "$GITHUB_ENV"
+
+      - name: Fetch serving handoff
+        if: hashFiles('artifacts/no-data') == ''
+        run: |
+          uv run python scripts/fetch_serving_handoff.py \
+            --profile "" \
+            --warehouse-id "${{ vars.DATABRICKS_WAREHOUSE_ID }}" \
+            --run-id "$JOB_RUN_ID" \
+            --environment prod \
+            --catalog "$BUNDLE_VAR_catalog" \
+            --bucket "$BUNDLE_VAR_bucket" \
+            --project "$BUNDLE_VAR_gcp_project" \
+            --dataset "$BUNDLE_VAR_dataset" \
+            --output artifacts/serving-handoff.json
+
+      - name: Publish native BigQuery serving
+        if: hashFiles('artifacts/no-data') == ''
+        run: |
+          uv run python scripts/publish_bigquery.py \
+            --handoff artifacts/serving-handoff.json \
+            --environment prod \
+            --project "$BUNDLE_VAR_gcp_project" \
+            --dataset "$BUNDLE_VAR_dataset" \
+            --bucket "$BUNDLE_VAR_bucket" \
+            --confirm-cost \
+            --confirm-production > artifacts/publication.json
+
+      - name: Reconcile production serving
+        if: hashFiles('artifacts/no-data') == ''
+        run: |
+          uv run python scripts/reconcile_bigquery.py \
+            --handoff artifacts/serving-handoff.json \
+            --output artifacts/bigquery-reconciliation.json
+
+      - name: Upload daily evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-daily-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 7
+          if-no-files-found: error

@@ -26,3 +26,5 @@ infra/.terraform/
 docs/
 AGENTS.md
 implementation.md
+
+*-plan-*.txt

@@ -61,14 +61,19 @@ def main() -> None:
     parser.add_argument("--profile", required=True)
     parser.add_argument("--warehouse-id", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--environment", choices=("dev", "staging", "prod"), default="staging")
+    parser.add_argument("--catalog", default="taxi_lakehouse_staging")
+    parser.add_argument("--bucket", default="taxi-data-engineer-taxi-lake-staging")
+    parser.add_argument("--project", default="taxi-data-engineer")
+    parser.add_argument("--dataset", default="taxi_analytics_staging")
     parser.add_argument("--output", default="artifacts/serving-handoff.json")
     args = parser.parse_args()
     config = {
-        "environment": "staging",
+        "environment": args.environment,
         "pipeline_run_id": args.run_id,
-        "databricks": {"catalog": "taxi_lakehouse_staging"},
-        "gcp": {"bucket": "taxi-data-engineer-taxi-lake-staging"},
-        "bigquery": {"dataset": "taxi_analytics_staging"},
+        "databricks": {"catalog": args.catalog},
+        "gcp": {"bucket": args.bucket, "project_id": args.project},
+        "bigquery": {"dataset": args.dataset},
     }
     handoff = fetch_handoff(args.profile, args.warehouse_id, config, args.run_id)
     output = Path(args.output)
