@@ -16,15 +16,20 @@ if str(ROOT) not in sys.path:
 from scripts.daily_source_landing import discover_latest, download_and_land
 
 
-def verify_gcs_object(uri: str, project: str, runner=subprocess.run) -> None:
-    gcloud = shutil.which("gcloud") or shutil.which("gcloud.cmd") or "gcloud.cmd"
-    result = runner(
-        [gcloud, "storage", "ls", uri, "--project", project],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
-        raise RuntimeError(f"Landed source object is unavailable: {uri}")
+def verify_gcs_object(uri: str, project: str, runner=subprocess.run, storage_client=None) -> None:
+    """Check one object with storage.objects.get, not bucket listing permission."""
+    if not uri.startswith("gs://"):
+        raise ValueError("source URI must use gs://")
+    bucket_name, object_name = uri.removeprefix("gs://").split("/", 1)
+    try:
+        if storage_client is None:
+            from google.cloud import storage
+
+            storage_client = storage.Client(project=project)
+        blob = storage_client.bucket(bucket_name).blob(object_name)
+        blob.reload()
+    except Exception as error:
+        raise RuntimeError(f"Landed source object is unavailable: {uri}: {error}") from error
 
 
 def prepare_source(
