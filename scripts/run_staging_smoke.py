@@ -23,8 +23,7 @@ from src.common.cost_guard import assert_confirmed, assert_non_production
 def source_exists(source_uri: str, runner=subprocess.run) -> bool:
     gcloud = shutil.which("gcloud") or shutil.which("gcloud.cmd") or "gcloud.cmd"
     check = runner(
-        [gcloud, "storage", "objects", "describe", source_uri,
-         "--project=taxi-data-engineer", "--format=value(name)"],
+        [gcloud, "storage", "ls", source_uri, "--project=taxi-data-engineer"],
         capture_output=True,
         text=True,
     )

@@ -19,7 +19,7 @@ from scripts.daily_source_landing import discover_latest, download_and_land
 def verify_gcs_object(uri: str, project: str, runner=subprocess.run) -> None:
     gcloud = shutil.which("gcloud") or shutil.which("gcloud.cmd") or "gcloud.cmd"
     result = runner(
-        [gcloud, "storage", "objects", "describe", uri, "--project", project, "--format=value(name)"],
+        [gcloud, "storage", "ls", uri, "--project", project],
         capture_output=True,
         text=True,
     )
