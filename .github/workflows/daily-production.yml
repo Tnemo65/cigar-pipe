@@ -49,7 +49,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "0.9.18"
-          enable-cache: true
+          enable-cache: false
 
       - uses: databricks/setup-cli@v1.9.0
         with:
@@ -73,39 +73,12 @@ jobs:
         id: source
         run: |
           mkdir -p artifacts
-          if [ -n "$SOURCE_URI_OVERRIDE" ]; then
-            python - <<'PY'
-            import json, os
-            from pathlib import Path
-            value = os.environ["SOURCE_URI_OVERRIDE"].strip()
-            month, separator, uri = value.partition("=")
-            if not separator or not uri.startswith("gs://"):
-                raise SystemExit("source_uri_map must be MONTH=gs://...")
-            result = {"status": "LANDED_OVERRIDE", "month": month, "uri": uri}
-            Path("artifacts/source-landing.json").write_text(json.dumps(result, indent=2))
-            Path("artifacts/source-month").write_text(month)
-            check = __import__("subprocess").run(["gcloud", "storage", "objects", "describe", uri, "--project", os.environ["BUNDLE_VAR_gcp_project"], "--format=value(name)"], capture_output=True, text=True)
-            if check.returncode != 0:
-                raise SystemExit(f"Landed source object is unavailable: {uri}")
-            Path("artifacts/source-uri").write_text(value)
-            PY
-          else
-            uv run python scripts/daily_source_landing.py \
-              --bucket "$BUNDLE_VAR_bucket" \
-              --lookback-months "$SOURCE_LOOKBACK_MONTHS" \
-              --output artifacts/source-landing.json
-          fi
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          result = json.loads(Path("artifacts/source-landing.json").read_text())
-          print(f"status={result['status']}")
-          if result["status"] == "NO_DATA":
-              Path("artifacts/no-data").touch()
-          elif result["status"] != "LANDED_OVERRIDE":
-              Path("artifacts/source-month").write_text(result["month"])
-              Path("artifacts/source-uri").write_text(f"{result['month']}={result['uri']}")
-          PY
+          uv run python scripts/prepare_daily_source.py \
+            --bucket "$BUNDLE_VAR_bucket" \
+            --project "$BUNDLE_VAR_gcp_project" \
+            --source-uri-override "$SOURCE_URI_OVERRIDE" \
+            --lookback-months "$SOURCE_LOOKBACK_MONTHS" \
+            --output artifacts/source-landing.json
 
       - name: Stop successfully when no new source is published
         if: hashFiles('artifacts/no-data') != ''
