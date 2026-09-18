@@ -3,12 +3,19 @@ from types import SimpleNamespace
 from scripts.prepare_daily_source import verify_gcs_object
 
 
-def test_preflight_uses_nested_path_safe_gcloud_ls():
-    calls = []
+def test_preflight_uses_object_get_not_bucket_list():
+    class Blob:
+        def reload(self):
+            return None
 
-    def runner(args, capture_output, text):
-        calls.append(args)
-        return SimpleNamespace(returncode=0, stdout="gs://bucket/prod/raw/file.parquet\n")
+    class Bucket:
+        def blob(self, name):
+            assert name == "prod/raw/file.parquet"
+            return Blob()
 
-    verify_gcs_object("gs://bucket/prod/raw/file.parquet", "project", runner)
-    assert calls[0][1:3] == ["storage", "ls"]
+    class Client:
+        def bucket(self, name):
+            assert name == "bucket"
+            return Bucket()
+
+    verify_gcs_object("gs://bucket/prod/raw/file.parquet", "project", storage_client=Client())

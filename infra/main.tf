@@ -235,6 +235,16 @@ resource "google_storage_bucket_iam_member" "uc_write" {
   }
 }
 
+resource "google_storage_bucket_iam_member" "github_raw_reader" {
+  bucket = google_storage_bucket.lake.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:taxi-github-${var.environment}@${var.project_id}.iam.gserviceaccount.com"
+  condition {
+    title      = "github_source_read_only"
+    expression = "resource.name.startsWith('${local.prefix}raw/')"
+  }
+}
+
 resource "google_storage_bucket_iam_member" "bigquery_source_reader" {
   bucket = google_storage_bucket.lake.name
   role   = "roles/storage.objectViewer"
