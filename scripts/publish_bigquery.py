@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from google.cloud import bigquery
+from google.cloud import bigquery, storage
 from google.api_core.exceptions import NotFound
 
 from datetime import datetime, timedelta, timezone
@@ -175,7 +175,24 @@ def ensure_target_tables(client, project: str, dataset: str) -> None:
         ]))
 
 
-def publish_handoff(handoff: dict, client=None) -> dict:
+def parquet_uris(export: dict, storage_client=None) -> list[str]:
+    """Use the immutable file manifest from the Databricks export."""
+    if export.get("data_uris"):
+        return list(export["data_uris"])
+    export_uri = export["uri"]
+    if not export_uri.startswith("gs://"):
+        raise ValueError("export URI must use gs://")
+    bucket_name, prefix = export_uri.removeprefix("gs://").split("/", 1)
+    if storage_client is None:
+        storage_client = storage.Client()
+    blobs = storage_client.list_blobs(bucket_name, prefix=prefix.rstrip("/") + "/")
+    uris = [f"gs://{bucket_name}/{blob.name}" for blob in blobs if blob.name.endswith(".parquet")]
+    if not uris:
+        raise ValueError(f"No Parquet objects found for export prefix: {export_uri}")
+    return sorted(uris)
+
+
+def publish_handoff(handoff: dict, client=None, storage_client=None) -> dict:
     client = client or bigquery.Client(project=handoff["project_id"])
     project = handoff["project_id"]
     dataset = handoff["dataset"]
@@ -209,7 +226,8 @@ def publish_handoff(handoff: dict, client=None) -> dict:
             ),
             autodetect=True,
         )
-        load_job = client.load_table_from_uri(export["uri"] + "/*.parquet", table_ref, job_config=config)
+        source_uris = parquet_uris(export, storage_client)
+        load_job = client.load_table_from_uri(source_uris, table_ref, job_config=config)
         load_job.result()
         loaded_marts.add(mart)
         table = client.get_table(table_ref)

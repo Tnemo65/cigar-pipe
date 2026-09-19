@@ -13,7 +13,7 @@ def test_multi_month_handoff_appends_each_month_to_one_stage_table():
             for month in ("2024-01-01", "2024-02-01")
         ],
         "exports": [
-            {"mart": m, "month": month, "uri": f"gs://b/{m}/{month}"}
+            {"mart": m, "month": month, "uri": f"gs://b/{m}/{month}", "data_uris": [f"gs://b/{m}/{month}/part.parquet"]}
             for m in ("revenue_by_zone_hour", "fare_integrity_daily", "payment_mix_monthly")
             for month in ("2024-01-01", "2024-02-01")
         ],

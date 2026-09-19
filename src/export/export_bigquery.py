@@ -184,11 +184,20 @@ def prepare_serving_handoff(spark, config, payload):
                 f"gold_export/{config['pipeline_run_id']}/{mart}/pickup_month={month}"
             )
             partition.write.mode("overwrite").parquet(export_uri)
+            from pyspark.dbutils import DBUtils
+
+            data_uris = [
+                item.path
+                for item in DBUtils(spark).fs.ls(export_uri)
+                if item.name.endswith(".parquet")
+            ]
+            if not data_uris:
+                raise RuntimeError(f"Gold export produced no Parquet objects: {export_uri}")
             metrics = next(
                 metric for metric in payload.get("gold_metrics", [])
                 if metric["mart"] == mart and metric["month"] == month
             )
-            exports.append({"mart": mart, "month": month, "uri": export_uri, "metrics": metrics})
+            exports.append({"mart": mart, "month": month, "uri": export_uri, "data_uris": data_uris, "metrics": metrics})
 
     if len(exports) != len(payload.get("gold_metrics", [])):
         raise RuntimeError("Gold export did not produce one file set per mart/month metric")
