@@ -86,20 +86,16 @@ jobs:
 
       - name: Resolve production job
         if: hashFiles('artifacts/no-data') == ''
-        working-directory: jobs
         run: |
-          databricks jobs list --output json > ../artifacts/jobs.json
-          uv run python ../scripts/cd_databricks.py select-job \
-            --input ../artifacts/jobs.json \
-            --name taxi-pipeline-prod \
-            --target prod > ../artifacts/production-job-id.txt
+          test -n "${{ vars.PRODUCTION_JOB_ID }}"
+          echo "${{ vars.PRODUCTION_JOB_ID }}" > artifacts/production-job-id.txt
 
       - name: Run production lakehouse
         if: hashFiles('artifacts/no-data') == ''
         working-directory: jobs
         run: |
           uv run python ../scripts/run_cd_job.py \
-            --jobs-json ../artifacts/jobs.json \
+            --job-id "$(cat ../artifacts/production-job-id.txt)" \
             --job-name taxi-pipeline-prod \
             --target prod \
             --start-month "$(cat ../artifacts/source-month)" \
