@@ -20,7 +20,7 @@ def test_publish_handoff_loads_every_export_before_transaction():
             {"mart": "payment_mix_monthly", "month": "2024-01-01", "rows": 1, "trips": 2},
         ],
         "exports": [
-            {"mart": mart, "month": "2024-01-01", "uri": f"gs://bucket/{mart}"}
+            {"mart": mart, "month": "2024-01-01", "uri": f"gs://bucket/{mart}", "data_uris": [f"gs://bucket/{mart}/part.parquet"]}
             for mart in ("revenue_by_zone_hour", "fare_integrity_daily", "payment_mix_monthly")
         ],
     }
@@ -35,5 +35,6 @@ def test_publish_handoff_loads_every_export_before_transaction():
     assert client.load_table_from_uri.call_count == 3
     assert client.query.call_count == 1
     assert client.query.call_args.args[0].startswith("BEGIN TRANSACTION;")
-    assert all("/*.parquet" in call.args[0] for call in client.load_table_from_uri.call_args_list)
+    expected = [[f"gs://bucket/{mart}/part.parquet"] for mart in ("revenue_by_zone_hour", "fare_integrity_daily", "payment_mix_monthly")]
+    assert [call.args[0] for call in client.load_table_from_uri.call_args_list] == expected
     assert all(table.startswith("_stage_") for table in result["staging_tables"].values())
