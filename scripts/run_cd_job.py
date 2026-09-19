@@ -19,8 +19,9 @@ def load_job_id(path: str, name: str, target: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--jobs-json", required=True)
+    parser.add_argument("--jobs-json")
     parser.add_argument("--job-name", required=True)
+    parser.add_argument("--job-id", default="")
     parser.add_argument("--target", required=True)
     parser.add_argument("--start-month", required=True)
     parser.add_argument("--end-month", required=True)
@@ -29,7 +30,12 @@ def main() -> None:
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    job_id = load_job_id(args.jobs_json, args.job_name, args.target)
+    if args.job_id:
+        job_id = args.job_id
+    elif args.jobs_json:
+        job_id = load_job_id(args.jobs_json, args.job_name, args.target)
+    else:
+        raise ValueError("Provide either --job-id or --jobs-json")
     run_id = launch_run(
         job_id,
         {
