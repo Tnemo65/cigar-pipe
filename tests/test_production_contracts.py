@@ -126,6 +126,8 @@ def test_bundle_all_tasks_receive_runtime_and_explicit_dependencies():
     assert tasks[0]['task_key'] == 'source_landing'
     assert tasks[-1]['task_key'] == 'monitor'
     assert job['max_concurrent_runs'] == 1
+    permissions = job.get('permissions', [])
+    assert any(item.get('level') == 'CAN_MANAGE_RUN' for item in permissions)
     required = {
         '--environment', '--catalog', '--bucket', '--project', '--dataset',
         '--pipeline-run-id', '--start-month', '--end-month', '--processing-date',

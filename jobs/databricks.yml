@@ -42,6 +42,9 @@ resources:
         enabled: true
       run_as:
         service_principal_name: ${var.run_as_service_principal}
+      permissions:
+      - level: CAN_MANAGE_RUN
+        service_principal_name: ${var.run_as_service_principal}
       parameters:
       - name: start_month
         default: ''
